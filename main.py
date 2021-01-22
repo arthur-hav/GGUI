@@ -21,6 +21,7 @@ class Widget:
         self.h = h
         self.dirty = True
         self.hovered = False
+        self.parent = None
         self.elements = []
 
     def __str__(self):
@@ -49,6 +50,9 @@ class Widget:
             element_x, element_y = self.to_element_x(x), self.to_element_y(y)
             element.check_mouse(element_x, element_y)
 
+    def bind(self, parent):
+        self.parent = parent
+
     def mouse_enter(self):
         pass
 
@@ -67,12 +71,16 @@ class Widget:
         for element in self.elements:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
 
+    def key_down(self, keycode, key_char):
+        for element in self.elements:
+            element.key_down(keycode, key_char)
+
     def draw(self, vbo, fbo, force=False):
         pass
 
     def add_element(self, element):
         self.elements.append(element)
-        element.parent = self
+        element.bind(self)
 
 
 class OverflowWidget(Widget):
@@ -82,7 +90,6 @@ class OverflowWidget(Widget):
         self.overflow_h = kwargs.get('overflow_h', 0)
         self.offset_x = 0
         self.offset_y = kwargs.get('overflow_h', 0)
-        self._parent = None
         self._scrollbar = None
 
     @property
@@ -93,10 +100,6 @@ class OverflowWidget(Widget):
     def total_h(self):
         return self.h + self.overflow_h
 
-    @property
-    def parent(self):
-        return self._parent
-
     def mouse_wheel(self, relative_y):
         if self.hovered:
             for element in self.elements:
@@ -105,18 +108,17 @@ class OverflowWidget(Widget):
                 self._scrollbar.y -= 30 * relative_y * self.h / self.total_h
                 self._scrollbar.scroll()
 
-    @parent.setter
-    def parent(self, parent):
+    def bind(self, parent):
         if not self.overflow_h and not self.overflow_w:
-            self._parent = parent
+            self.parent = parent
             return
-        if self._parent:
-            self._parent.elements.remove(self._scrollbar)
+        if self.parent:
+            self.parent.elements.remove(self._scrollbar)
         else:
             self._scrollbar = ScrollBar(window=self)
         parent.elements.append(self._scrollbar)
-        self._scrollbar.parent = parent
-        self._parent = parent
+        self._scrollbar.bind(parent)
+        self.parent = parent
 
     def to_element_x(self, x):
         return x - self.x - self.offset_x
@@ -133,7 +135,6 @@ MAGIC_NUMBER = 32
 
 
 class RenderFont:
-
     def __init__(self, font_path, font_size):
         self.face = freetype.Face(font_path)
         self.face.set_pixel_sizes(font_size, font_size)
@@ -356,10 +357,11 @@ class GuiContainer(OverflowWidget):
         vbo.flush(self.fbo)
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
         glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo if self.parent is not None else 0)
-        glViewport(0, 0, self.parent.total_w if self.parent else self.total_w, self.parent.total_h if self.parent else self.total_h)
+        w_disp = self.parent.total_w if self.parent else self.total_w
+        h_disp = self.parent.total_h if self.parent else self.total_h
+        glViewport(0, 0, w_disp, h_disp)
 
-        x, y, w, h = self.x / (self.parent.total_w if self.parent else self.total_w), 1 - (self.y + self.h) / (self.parent.total_h if self.parent else self.total_h), \
-                     self.w / (self.parent.total_w if self.parent else self.total_w), self.h / (self.parent.total_h if self.parent else self.total_h)
+        x, y, w, h = self.x / w_disp, 1 - (self.y + self.h) / h_disp, self.w / w_disp, self.h / h_disp
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
         tex_x0, tex_y0, tex_x1, tex_y1 = self.offset_x/self.total_w, \
                                          self.offset_y/self.total_h,\
@@ -455,8 +457,7 @@ class ScrollBar(GuiContainer):
 
     def scroll(self):
         self.y = min(max(self.y, self.window.y), self.window.y + self.window.h - self.h)
-        self.window.offset_y = self.window.overflow_h - (self.y - self.window.y) * (
-                self.window.total_h / self.h)
+        self.window.offset_y = self.window.overflow_h - (self.y - self.window.y) * (self.window.total_h / self.window.h)
         self.window.dirty = True
         self.dirty = True
 
@@ -472,7 +473,7 @@ class ScrollBar(GuiContainer):
     def mouse_enter(self):
         self.dirty = True
         self.window.dirty = True
-        self.color = (1, 1, 1, 1)
+        self.color = (1, 1, 1, 0.5)
 
     def mouse_leave(self):
         if self.drag_start:
@@ -486,11 +487,38 @@ class ScrollBar(GuiContainer):
         if not self.hovered:
             self.mouse_leave()
 
+
+class TextArea(GuiContainer):
+    def __init__(self,  x, y, w, h, font, color=(0,0,0,0)):
+        super().__init__(x, y, w, h, color=color)
+        self.render_string = RenderString(0, font.min_top, '', font, max_w=self.w)
+        self.add_element(self.render_string)
+        self.focus = False
+
+    def key_down(self, keycode, key_char):
+        if not self.focus:
+            return
+        if keycode == pygame.K_BACKSPACE:
+            print('bksp')
+            self.render_string.string = self.render_string.string[:-1]
+        else:
+            self.render_string.string = self.render_string.string + key_char
+        self.clear()
+
+    def mouse_down(self, x, y, buttons):
+        if not buttons[0]:
+            return
+        if self.hovered:
+            self.focus = True
+        else:
+            self.focus = False
+
 class Button(GuiContainer):
     def __init__(self, x, y, text, font, padding_x=16, padding_y=8, color=(0,0,0,0)):
         self.overflow_w, self.overflow_h = 0, 0
         self.caption = TextOverlay(padding_x, padding_y, text, font)
         super().__init__(x, y, self.caption.w + 2 * padding_x, self.caption.h + 2 * padding_y, color=color)
+        self.add_element(self.caption)
         self.hover_color = (0.8, 0.5, 0.5, 1.)
         self.default_color = self.color
         self.click_color = (0.2, 0, 0, 1)
@@ -498,7 +526,6 @@ class Button(GuiContainer):
         self.animation_start = None
         self.animation_end = None
         self.click = False
-        self._parent = None
 
     def mouse_enter(self):
         self.animation_start = self.color
@@ -578,7 +605,7 @@ class OptionsUIApp:
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, GL_ONE)
 
         self.background_surface = None
-        self.small_font = RenderFont("FiraCode-Regular.ttf", 14)
+        self.small_font = RenderFont("fonts/FiraCode-Regular.ttf", 14)
         self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1], color=(0, 0, 0, 1))
         self.panel = GuiContainer(40, 40, 1920 - 80, 1000, color=(0.05, 0.05, 0.05, 1))
         self.window_ui.add_element(self.panel)
@@ -588,10 +615,11 @@ class OptionsUIApp:
         self.panel3 = GuiContainer(40, 40, 500, 920, color=(0.1, 0.1, 0.1, 1), overflow_h=800)
         self.panel.add_element(self.panel2)
         self.panel.add_element(self.panel3)
-        self.panel.add_element(GuiContainer(580, 40, 200, 200, color=(0.1, 0.1, 0.1, 1)))
+        textarea = TextArea(580, 40, 200, 200, self.small_font, color=(0.1, 0.1, 0.1, 1))
+        self.panel.add_element(textarea)
         btn = Button(15, 5, 'LOREM IPSUM', self.small_font, color=(0.6, 0.2, 0.2, 1))
         self.panel2.add_element(btn)
-        btn.add_element(btn.caption)
+
         self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
         self.vbo = Vbo(self.small_font.id_tex)
         self.running = True
@@ -603,6 +631,8 @@ class OptionsUIApp:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            if event.type == pygame.KEYDOWN:
+                self.window_ui.key_down(event.key, event.unicode)
             if event.type == pygame.MOUSEBUTTONDOWN:
                 self.window_ui.mouse_down(*pygame.mouse.get_pos(), pygame.mouse.get_pressed(num_buttons=5))
             if event.type == pygame.MOUSEWHEEL:
