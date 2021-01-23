@@ -2,6 +2,7 @@ import pygame
 from OpenGL.GL import *
 import freetype
 import numpy
+import time
 from collections import defaultdict
 
 WRAP_CHAR = 'char'
@@ -18,6 +19,8 @@ class Style:
     def __init__(self, color=(0, 0, 0, 0),
                  hover_color=None,
                  click_color=None,
+                 border_color=None,
+                 border_line_w=0,
                  fade_in_time=0,
                  fade_out_time=0):
         self.default_color = color
@@ -25,6 +28,12 @@ class Style:
         self.click_color = click_color
         self.fade_in_time = fade_in_time
         self.fade_out_time = fade_out_time
+        self.border_color = border_color
+        self.border_line_w = border_line_w
+
+    @property
+    def background(self):
+        return self.hover_color or self.border_color
 
     def __str__(self):
         return f'#{int(255 * self.default_color[0]):02X}{int(255 * self.default_color[1]):02X}' \
@@ -54,13 +63,13 @@ class Widget:
         self.cleared = True
 
     def __repr__(self):
-        return f'{(self.x, self.y, self.w, self.h, self.style)}'
+        return f'{(self.x, self.y, self.w, self.h, str(self.style))}'
 
-    def update(self, run_time, idle_time):
+    def update(self, frame_time):
         for element in self.elements:
-            self.dirty = self.dirty or element.update(run_time, idle_time)
+            self.dirty = self.dirty or element.update(frame_time)
         if self.animation_ratio:
-            self.animation_ratio = max(0, self.animation_ratio - (run_time + idle_time) / (1000 * self.fade_timer))
+            self.animation_ratio = max(0, self.animation_ratio - (frame_time) / (1000 * self.fade_timer))
             self.dirty = True
         return self.dirty
 
@@ -130,6 +139,8 @@ class Widget:
             self.clicked = True
 
     def mouse_up(self, x, y):
+        for element in self.elements:
+            element.mouse_up(self.to_element_x(x), self.to_element_y(y))
         if self.clicked and self.style.click_color:
             self._color_start = self.get_color()
             self._color_end = self.style.hover_color if self.hovered else self.style.default_color
@@ -138,8 +149,6 @@ class Widget:
             self.clicked = False
             self.dirty = True
         self.clicked = False
-        for element in self.elements:
-            element.mouse_up(self.to_element_x(x), self.to_element_y(y))
 
     def key_down(self, keycode, key_char):
         for element in self.elements:
@@ -151,22 +160,40 @@ class Widget:
             dirty = element.draw(self.cleared) or dirty
         if dirty or self.dirty or force or self.cleared:
             self.parent_draw()
-        retval = dirty or self.dirty
+        retval = dirty or self.dirty or self.cleared
         self.dirty = False
         self.cleared = False
         return retval
 
     def parent_draw(self):
-        glBindTexture(GL_TEXTURE_2D, self.texture)
-        glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo)
-        glViewport(0, 0, self.parent.total_w, self.parent.total_h)
+        self.draw_background(self.parent)
 
-        x, y, w, h = self.x / (self.parent.total_w if self.parent else self.w), 1 - (self.y + self.h) / (
-            self.parent.total_h if self.parent else self.h), \
-                     self.w / (self.parent.total_w if self.parent else self.w), self.h / (
-                         self.parent.total_h if self.parent else self.h)
+    def draw_background(self, container):
+        if self.style.border_color and self.style.border_line_w:
+            self.gl_draw_rectangle(self.style.border_color, self.texture, container.fbo,
+                                   container.total_w, container.total_h)
+            self.x += self.style.border_line_w
+            self.y += self.style.border_line_w
+            self.w -= self.style.border_line_w * 2
+            self.h -= self.style.border_line_w * 2
+            self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
+                                   container.total_w, container.total_h)
+            self.x -= self.style.border_line_w
+            self.y -= self.style.border_line_w
+            self.w += self.style.border_line_w * 2
+            self.h += self.style.border_line_w * 2
+        else:
+            self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
+                                   container.total_w, container.total_h)
+
+    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h):
+        glBindTexture(GL_TEXTURE_2D, texture)
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+        glViewport(0, 0, viewort_w, viewport_h)
+        x, y, w, h = self.x / viewort_w, 1 - (self.y + self.h) / viewport_h, \
+                     self.w / viewort_w, self.h / viewport_h
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
-        glColor4f(*self.get_color())
+        glColor4f(*color)
         glBegin(GL_TRIANGLES)
         glVertex2f(x1, y1)
         glVertex2f(x2, y2)
@@ -340,6 +367,8 @@ class RenderString(Widget):
 
     @string.setter
     def string(self, value):
+        if value == self._string:
+            return
         self._string = value
         max_x = self.x
         max_y = self.y
@@ -414,7 +443,6 @@ class GuiContainer(OverflowWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fbo, self.fbo_tex = self.create_fbo(self.total_w, self.total_h)
-        self.cleared = False
         self.clear()
 
     def create_fbo(self, w, h):
@@ -437,11 +465,14 @@ class GuiContainer(OverflowWidget):
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glClearColor(*self.get_color())
         glClear(GL_COLOR_BUFFER_BIT)
+        if self.style.background:
+            x, y, w, h = self.x, self.y, self.w, self.h
+            self.x, self.y, self.w, self.h = 0, self.overflow_h, self.total_w, self.total_h
+            self.draw_background(self)
+            self.x, self.y, self.w, self.h = x, y, w, h
         super().clear()
 
     def parent_draw(self):
-        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        glViewport(0, 0, self.total_w, self.total_h)
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
         glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo if self.parent is not None else 0)
         w_disp = self.parent.total_w if self.parent else self.total_w
@@ -477,30 +508,6 @@ class TextOverlay(GuiContainer):
         self.render_string = RenderString(0, font.min_top, text, font, style_args={'color': (1, 1, 1, 1)})
         super().__init__(x, y, self.render_string.w, self.render_string.h)
         self.add_element(self.render_string)
-
-
-class LoadDisplay(TextOverlay):
-    def __init__(self, x, y, font):
-        super().__init__(x, y, '000.0% load', font)
-        self.delay_buffer = []
-        self.last_update = 0
-
-    def update(self, run_time, idle_time):
-        val_in = self.delay_buffer.append(run_time * FRAMERATE / 1000.0)
-        if len(self.delay_buffer) > 200:
-            val_out = self.delay_buffer.pop(0)
-            if val_in == val_out:
-                return False
-        if self.last_update < 100:
-            self.last_update += run_time + idle_time
-            return False
-        load = 100 * sum(self.delay_buffer) / len(self.delay_buffer)
-        self.clear()
-        self.render_string.string = f'{load:.1f}% load'
-        self.last_update = 0
-        super().update(run_time, idle_time)
-        return True
-
 
 class ScrollBar(Widget):
     def __init__(self, window):
@@ -542,14 +549,12 @@ class ScrollBar(Widget):
 
     def mouse_enter(self):
         super().mouse_enter()
-        self.clear()
         self.window.dirty = True
 
     def mouse_leave(self):
         super().mouse_leave()
         if self.drag_start:
             return
-        self.clear()
         self.window.dirty = True
 
     def mouse_up(self, x, y):
@@ -591,30 +596,50 @@ class Button(GuiContainer):
         style_args = {
             'color': (0.6, 0.2, 0.2, 1),
             'hover_color': (0.7, 0.3, 0.3, 1),
-            'click_color': (0.5, 0, 0, 1),
-            'fade_out_time': 0.5
+            'click_color': (0.0, 1, 0, 1),
+            'fade_out_time': 0.5,
+            'border_color': (1, 1, 1, 1),
+            'border_line_w': 1
         }
         super().__init__(x, y, self.caption.w + 2 * padding_x, self.caption.h + 2 * padding_y)
-        bg = Widget(0, 0, self.w, self.h, style_args=style_args)
-        self.add_element(bg)
+        self.bg = Widget(0, 0, self.w, self.h, style_args=style_args)
+        self.add_element(self.bg)
         self.add_element(self.caption)
 
-    def update(self, run_time, idle_time):
-        dirty = super().update(run_time, idle_time)
-        if dirty:
+    def update(self, frame_time):
+        super().update(frame_time)
+        if self.bg.dirty:
             self.clear()
+        return self.dirty or self.cleared
 
 
 class MainWindow(GuiContainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.running = True
+
     def get_mode(self):
         return GL_RGB
 
-    def update(self, run_time, idle_time):
-        ret = super().update(run_time, idle_time)
-        if ret:
-            self.clear()
-        self.dirty = True
+    def update(self, frame_time):
+        super().update(frame_time)
+        self.clear()
+        return True
 
+    def process_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            if event.type == pygame.KEYDOWN:
+                self.key_down(event.key, event.unicode)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                self.mouse_down(*pygame.mouse.get_pos(), pygame.mouse.get_pressed(num_buttons=5))
+            if event.type == pygame.MOUSEWHEEL:
+                self.mouse_wheel(event.y)
+            if event.type == pygame.MOUSEBUTTONUP:
+                self.mouse_up(*pygame.mouse.get_pos())
+            if event.type == pygame.MOUSEMOTION:
+                self.check_mouse(*pygame.mouse.get_pos())
 
 class OptionsUIApp:
     def __init__(self):
@@ -644,8 +669,8 @@ class OptionsUIApp:
         self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1])
         self.panel = GuiContainer(40, 40, 1920 - 80, 1000, style_args=dict(color=(0.05, 0.05, 0.05, 1)))
         self.window_ui.add_element(self.panel)
-        self.fps_display = LoadDisplay(20, 10, self.small_font)
-        self.window_ui.add_element(self.fps_display)
+        self.load_display = TextOverlay(20, 10, '000.0 load', self.small_font)
+        self.window_ui.add_element(self.load_display)
 
         panel_level2_style = dict(color=(0.1, 0.1, 0.1, 1))
         self.panel2 = GuiContainer(1540, 40, 150, 50, style_args=panel_level2_style)
@@ -657,38 +682,34 @@ class OptionsUIApp:
         btn = Button(15, 5, 'LOREM IPSUM', self.small_font)
         self.panel2.add_element(btn)
         self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w, style_args={
-            'color': (1, 1, 1, 1)
+            'color': (1, 1, 1, 1),
         }))
         self.running = True
         self.show_fps = True
         self.toggle_click = False
         self.run()
 
-    def process_events(self):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            if event.type == pygame.KEYDOWN:
-                self.window_ui.key_down(event.key, event.unicode)
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                self.window_ui.mouse_down(*pygame.mouse.get_pos(), pygame.mouse.get_pressed(num_buttons=5))
-            if event.type == pygame.MOUSEWHEEL:
-                self.window_ui.mouse_wheel(event.y)
-            if event.type == pygame.MOUSEBUTTONUP:
-                self.window_ui.mouse_up(*pygame.mouse.get_pos())
-            if event.type == pygame.MOUSEMOTION:
-                self.window_ui.check_mouse(*pygame.mouse.get_pos())
-
     def run(self):
-        while self.running:
-            runtime = self.clock.tick()
-            idle_time = self.clock.tick(FRAMERATE)
-            self.process_events()
-            self.window_ui.update(runtime, idle_time)
+        t0 = time.time_ns()
+        t1 = t0
+        load_buff = []
+        while self.window_ui.running:
+            t0 = time.time_ns()
+            self.clock.tick(FRAMERATE)
+            t_run_0 = time.time_ns()
+            if load_buff:
+                self.load_display.clear()
+                load = sum(load_buff) / len(load_buff)
+                if len(load_buff) > 100:
+                    load_buff.pop(0)
+                self.load_display.render_string.string = f'{load:.1f}% load'
+            load_buff.append(100 * (t1 - t_run_0) / max((t1 - t0), 1))
+            self.window_ui.process_events()
+            self.window_ui.update(t0 - t1 / 10**6)
             self.window_ui.draw()
             pygame.display.flip()
+            t1 = time.time_ns()
 
 
 if __name__ == '__main__':
     app = OptionsUIApp()
-    app.run()
