@@ -11,10 +11,28 @@ Donec ut laoreet quam, in tincidunt ipsum. Sed in faucibus est, eu ultrices veli
 Nullam rhoncus massa nec felis luctus hendrerit. Ut rhoncus vehicula diam eu tincidunt. Etiam tempor lobortis sodales. Aliquam volutpat et elit ut rhoncus. Nunc facilisis, sapien ac laoreet auctor, tellus enim ornare risus, at tincidunt ligula neque non lectus. Morbi rhoncus ex malesuada libero dictum auctor. Pellentesque vitae arcu eget felis facilisis tempus eu sit amet diam. Donec sem ipsum, molestie ut tempor a, ultrices pulvinar erat. Mauris lacinia augue quis luctus rutrum. Mauris consequat orci at magna tincidunt, vel lacinia magna molestie. Nam vulputate faucibus urna, vel auctor nibh vulputate vel. Aliquam bibendum nisl in euismod mattis.
 Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Vivamus bibendum magna justo, consequat sollicitudin risus tincidunt at. Etiam blandit finibus elit, ut facilisis ipsum vehicula eget. Maecenas ultricies erat sed hendrerit condimentum. Aenean semper bibendum elit. Cras molestie posuere metus a euismod. Nunc nec ligula metus. Nam pellentesque, nulla id faucibus interdum, nunc dui molestie turpis, nec semper nulla tortor at nibh. Quisque tempus fermentum egestas. Donec feugiat turpis et dolor vehicula, sed convallis nunc ultricies. Nulla vestibulum odio et sapien facilisis, eget ultrices elit blandit. Nullam a justo porttitor, luctus ex a, venenatis augue. Ut et leo sit amet felis mattis ultricies. Quisque sollicitudin, lorem vitae sagittis viverra, nunc erat finibus tellus, in pharetra felis diam ut elit.
 Cras blandit eget arcu sed maximus. Suspendisse faucibus, quam nec hendrerit placerat, ipsum dolor gravida diam, vitae posuere enim justo nec quam. Fusce arcu neque, lacinia vitae magna nec, finibus maximus urna. Phasellus congue varius nibh. Morbi vestibulum a nisl eget luctus. Quisque condimentum nulla ut turpis rutrum, ut pharetra eros rutrum. Nam vel pulvinar ex. Lorem ipsum dolor sit amet, consectetur adipiscing elit. """
-FRAMERATE = 60.0
+FRAMERATE = 60
+
+
+class Style:
+    def __init__(self, color=(0, 0, 0, 0),
+                 hover_color=None,
+                 click_color=None,
+                 fade_in_time=0,
+                 fade_out_time=0):
+        self.default_color = color
+        self.hover_color = hover_color
+        self.click_color = click_color
+        self.fade_in_time = fade_in_time
+        self.fade_out_time = fade_out_time
+
+    def __str__(self):
+        return f'#{int(255 * self.default_color[0]):02X}{int(255 * self.default_color[1]):02X}' \
+               f'{int(255 * self.default_color[2]):02X}{int(255 * self.default_color[3]):02X}'
+
 
 class Widget:
-    def __init__(self, x, y, w=0, h=0, *args, **kwargs):
+    def __init__(self, x, y, w=0, h=0, style_args=None, *args, **kwargs):
         self.x = x
         self.y = y
         self.w = w
@@ -23,14 +41,38 @@ class Widget:
         self.hovered = False
         self.parent = None
         self.elements = []
+        self.style = Style(**(style_args or {}))
+        self.clicked = False
+        self.fade_timer = 0
+        self.animation_ratio = 0
+        self._color_start = self.style.default_color
+        self._color_end = self.style.default_color
+        self.cleared = False
+        self.texture = 0
 
-    def __str__(self):
-        return f'{(self.x, self.y, self.w, self.h, self.color)}'
+    def clear(self):
+        self.cleared = True
+
+    def __repr__(self):
+        return f'{(self.x, self.y, self.w, self.h, self.style)}'
 
     def update(self, run_time, idle_time):
         for element in self.elements:
             self.dirty = self.dirty or element.update(run_time, idle_time)
+        if self.animation_ratio:
+            self.animation_ratio = max(0, self.animation_ratio - (run_time + idle_time) / (1000 * self.fade_timer))
+            self.dirty = True
         return self.dirty
+
+    def get_color(self):
+        if self.animation_ratio:
+            return tuple(self._color_start[i] * self.animation_ratio + \
+                         self._color_end[i] * (1 - self.animation_ratio) for i in range(4))
+        if self.clicked and self.style.click_color:
+            return self.style.click_color
+        if self.hovered and self.style.hover_color:
+            return self.style.hover_color
+        return self.style.default_color
 
     def to_element_x(self, x):
         return x - self.x
@@ -38,14 +80,15 @@ class Widget:
     def to_element_y(self, y):
         return y - self.y
 
+    def hover_pred(self, x, y):
+        return self.x < x < self.x + self.w and self.y < y < self.y + self.h
+
     def check_mouse(self, x, y):
-        if self.x < x < self.x + self.w and self.y < y < self.y + self.h:
+        if self.hover_pred(x, y):
             if not self.hovered:
                 self.mouse_enter()
-            self.hovered = True
         elif self.hovered:
             self.mouse_leave()
-            self.hovered = False
         for element in self.elements:
             element_x, element_y = self.to_element_x(x), self.to_element_y(y)
             element.check_mouse(element_x, element_y)
@@ -54,10 +97,22 @@ class Widget:
         self.parent = parent
 
     def mouse_enter(self):
-        pass
+        if not self.hovered and not self.clicked and self.style.hover_color:
+            self._color_start = self.get_color()
+            self.fade_timer = self.style.fade_in_time
+            self.animation_ratio = 1.0 if self.fade_timer else 0
+            self._color_end = self.style.hover_color
+            self.dirty = True
+        self.hovered = True
 
     def mouse_leave(self):
-        pass
+        if not self.clicked and self.style.hover_color:
+            self._color_start = self.get_color()
+            self.fade_timer = self.style.fade_out_time
+            self.animation_ratio = 1.0 if self.fade_timer else 0
+            self._color_end = self.style.default_color
+            self.dirty = True
+        self.hovered = False
 
     def mouse_wheel(self, relative_y):
         pass
@@ -66,8 +121,23 @@ class Widget:
         if self.hovered:
             for element in self.elements:
                 element.mouse_down(self.to_element_x(x), self.to_element_y(y), buttons)
+            if not self.clicked and self.style.click_color:
+                self._color_start = self.get_color()
+                self.fade_timer = self.style.fade_in_time
+                self.animation_ratio = 1.0 if self.fade_timer else 0
+                self._color_end = self.style.click_color
+                self.dirty = True
+            self.clicked = True
 
     def mouse_up(self, x, y):
+        if self.clicked and self.style.click_color:
+            self._color_start = self.get_color()
+            self._color_end = self.style.hover_color if self.hovered else self.style.default_color
+            self.fade_timer = self.style.fade_out_time
+            self.animation_ratio = 1.0 if self.fade_timer else 0
+            self.clicked = False
+            self.dirty = True
+        self.clicked = False
         for element in self.elements:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
 
@@ -75,8 +145,38 @@ class Widget:
         for element in self.elements:
             element.key_down(keycode, key_char)
 
-    def draw(self, vbo, fbo, force=False):
-        pass
+    def draw(self, force=False):
+        dirty = False
+        for element in self.elements:
+            dirty = element.draw(self.cleared) or dirty
+        if dirty or self.dirty or force or self.cleared:
+            self.parent_draw()
+        retval = dirty or self.dirty
+        self.dirty = False
+        self.cleared = False
+        return retval
+
+    def parent_draw(self):
+        glBindTexture(GL_TEXTURE_2D, self.texture)
+        glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo)
+        glViewport(0, 0, self.parent.total_w, self.parent.total_h)
+
+        x, y, w, h = self.x / (self.parent.total_w if self.parent else self.w), 1 - (self.y + self.h) / (
+            self.parent.total_h if self.parent else self.h), \
+                     self.w / (self.parent.total_w if self.parent else self.w), self.h / (
+                         self.parent.total_h if self.parent else self.h)
+        x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
+        glColor4f(*self.get_color())
+        glBegin(GL_TRIANGLES)
+        glVertex2f(x1, y1)
+        glVertex2f(x2, y2)
+        glVertex2f(x1, y2)
+
+        glVertex2f(x1, y1)
+        glVertex2f(x2, y1)
+        glVertex2f(x2, y2)
+
+        glEnd()
 
     def add_element(self, element):
         self.elements.append(element)
@@ -126,6 +226,7 @@ class OverflowWidget(Widget):
     def to_element_y(self, y):
         return y - self.offset_y + self.overflow_h - self.y
 
+
 class Options:
     def __init__(self):
         self.resolution = (1920, 1080)
@@ -146,13 +247,14 @@ class RenderFont:
         self.min_top = None
         self.fill_char_index()
         full_binary = self.get_full_binary()
-        self.id_tex = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.id_tex)
+        self.texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.texture)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.line_height * MAGIC_NUMBER,
                      len(full_binary) // (MAGIC_NUMBER * self.line_height * 4),
                      0, GL_RGBA, GL_UNSIGNED_BYTE, full_binary)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        self.vbo = Vbo()
 
     def fill_char_index(self):
         for enum, my_char in enumerate(self.face.get_chars()):
@@ -193,42 +295,44 @@ class RenderFont:
 
 
 class Vbo:
-    def __init__(self, tex):
-        self.tex_buffer = defaultdict(list)
-        self.vtx_buffer = defaultdict(list)
-        self.tex = tex
+    def __init__(self):
+        self.tex_buffer = []
+        self.vtx_buffer = []
 
-    def push(self, tex_array, vtx_array, fbo):
-        self.tex_buffer[fbo].extend(tex_array)
-        self.vtx_buffer[fbo].extend(vtx_array)
+    def push(self, tex_array, vtx_array):
+        self.tex_buffer.extend(tex_array)
+        self.vtx_buffer.extend(vtx_array)
 
-    def flush(self, fbo):
-        if not self.vtx_buffer[fbo]:
+    def flush(self, widget):
+        if not self.vtx_buffer:
             return
-        glBindTexture(GL_TEXTURE_2D, self.tex)
+        glBindTexture(GL_TEXTURE_2D, widget.texture)
+        glBindFramebuffer(GL_FRAMEBUFFER, widget.parent.fbo)
+        glViewport(0, 0, widget.parent.total_w, widget.parent.total_h)
         glEnableClientState(GL_VERTEX_ARRAY)
         glEnableClientState(GL_TEXTURE_COORD_ARRAY)
-        glColor3f(1,1,1)
-        glVertexPointer(2, GL_FLOAT, 0, numpy.array(self.vtx_buffer[fbo], dtype=numpy.float32).tobytes())
-        glTexCoordPointer(2, GL_FLOAT, 0, numpy.array(self.tex_buffer[fbo], dtype=numpy.float32).tobytes())
-        indices = numpy.array(list(range(len(self.vtx_buffer[fbo]))), dtype=numpy.uint32)
-        glDrawElements(GL_TRIANGLES, len(self.vtx_buffer[fbo]) // 2, GL_UNSIGNED_INT, indices.tobytes())
+        glColor4f(*widget.get_color())
+        glVertexPointer(2, GL_FLOAT, 0, numpy.array(self.vtx_buffer, dtype=numpy.float32).tobytes())
+        glTexCoordPointer(2, GL_FLOAT, 0, numpy.array(self.tex_buffer, dtype=numpy.float32).tobytes())
+        indices = numpy.array(list(range(len(self.vtx_buffer))), dtype=numpy.uint32)
+        glDrawElements(GL_TRIANGLES, len(self.vtx_buffer) // 2, GL_UNSIGNED_INT, indices.tobytes())
         glDisableClientState(GL_VERTEX_ARRAY)
         glDisableClientState(GL_TEXTURE_COORD_ARRAY)
         glFlush()
-        self.vtx_buffer[fbo] = []
-        self.tex_buffer[fbo] = []
+        self.vtx_buffer = []
+        self.tex_buffer = []
 
 
 class RenderString(Widget):
-    def __init__(self, x, y, string, render_font, wrap=WRAP_WORDS, max_w=None):
-        super().__init__(x, y)
+    def __init__(self, x, y, string, render_font, wrap=WRAP_WORDS, max_w=None, **kwargs):
+        super().__init__(x, y, **kwargs)
         self.max_w = max_w
         self.wrap = wrap
         self.render_font = render_font
         self._string = None
         self._render = []
         self.string = string
+        self.texture = render_font.texture
 
     @property
     def string(self):
@@ -252,7 +356,8 @@ class RenderString(Widget):
         for i, chunk in enumerate(chunks):
             if i > 0 and self.wrap == WRAP_WORDS:
                 chunk = ' ' + chunk
-            size_chunk = sum(self.render_font.char_sizes[self.render_font.face.get_char_index(char)][4] for char in chunk)
+            size_chunk = sum(
+                self.render_font.char_sizes[self.render_font.face.get_char_index(char)][4] for char in chunk)
             if self.max_w is not None and cur_x != self.x and cur_x + size_chunk > self.max_w:
                 cur_x = self.x
                 cur_y += height
@@ -270,9 +375,7 @@ class RenderString(Widget):
                 yield char, cur_x, cur_y, advance
                 cur_x += advance
 
-    def draw(self, vbo, fbo, force=False):
-        if not self.dirty and not force:
-            return False
+    def parent_draw(self, force=False):
         for char, cur_x, cur_y, advance in self.iter_chars():
             rect = pygame.rect.Rect(cur_x + self.render_font.char_sizes[char][0],
                                     cur_y - self.render_font.char_sizes[char][1],
@@ -303,14 +406,12 @@ class RenderString(Widget):
                                                                            tex_y2]
             vtx_pointer = [vtx_x, vtx_y, vtx_x2, vtx_y2, vtx_x, vtx_y2] + [vtx_x, vtx_y, vtx_x2, vtx_y, vtx_x2,
                                                                            vtx_y2]
-            vbo.push(tex_pointer, vtx_pointer, fbo)
-        self.dirty = False
-        return True
+            self.render_font.vbo.push(tex_pointer, vtx_pointer)
+        self.render_font.vbo.flush(self)
 
 
 class GuiContainer(OverflowWidget):
     def __init__(self, *args, **kwargs):
-        self.color = kwargs.get('color', (0, 0, 0, 0))
         super().__init__(*args, **kwargs)
         self.fbo, self.fbo_tex = self.create_fbo(self.total_w, self.total_h)
         self.cleared = False
@@ -329,32 +430,18 @@ class GuiContainer(OverflowWidget):
         return fb_id, texID
 
     def get_mode(self):
-        return GL_RGBA if self.color[3] != 1 else GL_RGB
+        return GL_RGBA
 
-    def clear(self, color=None):
+    def clear(self):
         glBindTexture(GL_TEXTURE_2D, 0)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
-        if color is None:
-            color = self.color
-        glClearColor(color[0], color[1], color[2], color[3])
+        glClearColor(*self.get_color())
         glClear(GL_COLOR_BUFFER_BIT)
-        self.cleared = True
+        super().clear()
 
-    def draw(self, vbo, fbo, force=False):
-        dirty = False
-        for element in self.elements:
-            dirty = element.draw(vbo, self.fbo, self.cleared) or dirty
-        if dirty or self.dirty or force or self.cleared:
-            self.parent_draw(vbo)
-        retval = dirty or self.dirty
-        self.dirty = False
-        self.cleared = False
-        return retval
-
-    def parent_draw(self, vbo):
+    def parent_draw(self):
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glViewport(0, 0, self.total_w, self.total_h)
-        vbo.flush(self.fbo)
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
         glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo if self.parent is not None else 0)
         w_disp = self.parent.total_w if self.parent else self.total_w
@@ -363,10 +450,11 @@ class GuiContainer(OverflowWidget):
 
         x, y, w, h = self.x / w_disp, 1 - (self.y + self.h) / h_disp, self.w / w_disp, self.h / h_disp
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
-        tex_x0, tex_y0, tex_x1, tex_y1 = self.offset_x/self.total_w, \
-                                         self.offset_y/self.total_h,\
-                                         (self.offset_x+self.w)/self.total_w, \
-                                         (self.offset_y+self.h)/self.total_h,
+        tex_x0 = self.offset_x / self.total_w
+        tex_y0 = self.offset_y / self.total_h
+        tex_x1 = (self.offset_x + self.w) / self.total_w
+        tex_y1 = (self.offset_y + self.h) / self.total_h
+        glColor4f(1, 1, 1, 1)
         glBegin(GL_TRIANGLES)
         glTexCoord2f(tex_x0, tex_y0)
         glVertex2f(x1, y1)
@@ -385,20 +473,20 @@ class GuiContainer(OverflowWidget):
 
 
 class TextOverlay(GuiContainer):
-    def __init__(self, x, y, text, font, color=(0,0,0,0)):
-        self.render_string = RenderString(0, font.min_top, text, font)
-        super().__init__(x, y, self.render_string.w, self.render_string.h, color=color)
+    def __init__(self, x, y, text, font):
+        self.render_string = RenderString(0, font.min_top, text, font, style_args={'color': (1, 1, 1, 1)})
+        super().__init__(x, y, self.render_string.w, self.render_string.h)
         self.add_element(self.render_string)
 
 
 class LoadDisplay(TextOverlay):
     def __init__(self, x, y, font):
-        super().__init__(x, y, '00.0% load', font)
+        super().__init__(x, y, '000.0% load', font)
         self.delay_buffer = []
         self.last_update = 0
 
     def update(self, run_time, idle_time):
-        val_in = self.delay_buffer.append(min(run_time * FRAMERATE / 1000.0, 1))
+        val_in = self.delay_buffer.append(run_time * FRAMERATE / 1000.0)
         if len(self.delay_buffer) > 200:
             val_out = self.delay_buffer.pop(0)
             if val_in == val_out:
@@ -414,42 +502,23 @@ class LoadDisplay(TextOverlay):
         return True
 
 
-class ScrollBar(GuiContainer):
+class ScrollBar(Widget):
     def __init__(self, window):
-        super().__init__(window.x + window.w - 8, window.y, 8, window.h ** 2 // window.total_h)
+        style_args = {
+            'color': (1, 1, 1, 0.1),
+            'hover_color': (1, 1, 1, 0.2),
+            'click_color': (1, 1, 1, 1)
+        }
+        super().__init__(window.x + window.w - 8, window.y, 8, window.h ** 2 // window.total_h, style_args=style_args)
         self.drag_start = None
         self.window = window
         self.hovered = False
-        self.color = (1, 1, 1, 0.1)
 
-    def parent_draw(self, vbo):
-        glBindTexture(GL_TEXTURE_2D, 0)
-        glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo)
-        glViewport(0, 0, self.parent.total_w, self.parent.total_h)
-
-        x, y, w, h = self.x / (self.parent.total_w if self.parent else self.w), 1 - (self.y + self.h) / (self.parent.total_h if self.parent else self.h), \
-                     self.w / (self.parent.total_w if self.parent else self.w), self.h / (self.parent.total_h if self.parent else self.h)
-        x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
-        glColor4f(*self.color)
-        glBegin(GL_TRIANGLES)
-        glVertex2f(x1, y1)
-        glVertex2f(x2, y2)
-        glVertex2f(x1, y2)
-
-        glVertex2f(x1, y1)
-        glVertex2f(x2, y1)
-        glVertex2f(x2, y2)
-        glColor4f(1, 1, 1, 1)
-        glEnd()
+    def hover_pred(self, x, y):
+        return self.x < x < self.x + self.w and self.window.y < y < self.y + self.window.h
 
     def check_mouse(self, x, y):
-        if self.x < x < self.x + self.w and self.window.y < y < self.y + self.window.h:
-            if not self.hovered:
-                self.mouse_enter()
-            self.hovered = True
-        elif self.hovered:
-            self.mouse_leave()
-            self.hovered = False
+        super().check_mouse(x, y)
         if self.drag_start:
             self.y -= self.drag_start[1] - y
             self.drag_start = (x, y)
@@ -462,35 +531,37 @@ class ScrollBar(GuiContainer):
         self.dirty = True
 
     def mouse_down(self, x, y, buttons):
+        super().mouse_down(x, y, buttons)
         if not buttons[0]:
             return
         if self.hovered:
             self.drag_start = (x, y)
-            if not self.y < y < self.y + self.h:   # Jump click
+            if not self.y < y < self.y + self.h:  # Jump click
                 self.y = y - self.h // 2
                 self.scroll()
 
     def mouse_enter(self):
-        self.dirty = True
+        super().mouse_enter()
+        self.clear()
         self.window.dirty = True
-        self.color = (1, 1, 1, 0.5)
 
     def mouse_leave(self):
+        super().mouse_leave()
         if self.drag_start:
             return
-        self.dirty = True
+        self.clear()
         self.window.dirty = True
-        self.color = (1, 1, 1, 0.1)
 
     def mouse_up(self, x, y):
+        super().mouse_up(x, y)
         self.drag_start = None
         if not self.hovered:
             self.mouse_leave()
 
 
 class TextArea(GuiContainer):
-    def __init__(self,  x, y, w, h, font, color=(0,0,0,0)):
-        super().__init__(x, y, w, h, color=color)
+    def __init__(self, x, y, w, h, font, **kwargs):
+        super().__init__(x, y, w, h, **kwargs)
         self.render_string = RenderString(0, font.min_top, '', font, max_w=self.w)
         self.add_element(self.render_string)
         self.focus = False
@@ -499,7 +570,6 @@ class TextArea(GuiContainer):
         if not self.focus:
             return
         if keycode == pygame.K_BACKSPACE:
-            print('bksp')
             self.render_string.string = self.render_string.string[:-1]
         else:
             self.render_string.string = self.render_string.string + key_char
@@ -513,61 +583,26 @@ class TextArea(GuiContainer):
         else:
             self.focus = False
 
+
 class Button(GuiContainer):
-    def __init__(self, x, y, text, font, padding_x=16, padding_y=8, color=(0,0,0,0)):
+    def __init__(self, x, y, text, font, padding_x=16, padding_y=8):
         self.overflow_w, self.overflow_h = 0, 0
         self.caption = TextOverlay(padding_x, padding_y, text, font)
-        super().__init__(x, y, self.caption.w + 2 * padding_x, self.caption.h + 2 * padding_y, color=color)
+        style_args = {
+            'color': (0.6, 0.2, 0.2, 1),
+            'hover_color': (0.7, 0.3, 0.3, 1),
+            'click_color': (0.5, 0, 0, 1),
+            'fade_out_time': 0.5
+        }
+        super().__init__(x, y, self.caption.w + 2 * padding_x, self.caption.h + 2 * padding_y)
+        bg = Widget(0, 0, self.w, self.h, style_args=style_args)
+        self.add_element(bg)
         self.add_element(self.caption)
-        self.hover_color = (0.8, 0.5, 0.5, 1.)
-        self.default_color = self.color
-        self.click_color = (0.2, 0, 0, 1)
-        self.animate_time = 0
-        self.animation_start = None
-        self.animation_end = None
-        self.click = False
-
-    def mouse_enter(self):
-        self.animation_start = self.color
-        self.animation_end = self.hover_color
-        self.animate_time = 0
-
-    def mouse_leave(self):
-        self.animation_start = self.color
-        self.animation_end = self.default_color
-        self.click = False
-
-    def mouse_down(self, x, y, buttons):
-        if not buttons[0]:
-            return
-        if self.hovered:
-            self.animation_start = self.color
-            self.animation_end = self.click_color
-            self.animate_time = 0
-            self.click = True
-
-    def mouse_up(self, x, y):
-        self.dirty = self.click
-        self.animation_start = self.color
-        self.animation_end = self.hover_color if self.hovered else self.default_color
-        self.animate_time = 0
-        self.click = False
 
     def update(self, run_time, idle_time):
-        super().update(run_time, idle_time)
-        if self.animation_start and self.animation_end:
-            self.animate_time += (run_time + idle_time) / 100
-            if self.animate_time >= 1.0:
-                self.color = self.animation_end
-                self.animation_start, self.animation_end = None, None
-            else:
-                self.color = tuple(self.animation_start[i] * (1 - self.animate_time) + \
-                                   self.animation_end[i] * self.animate_time for i in range(4))
+        dirty = super().update(run_time, idle_time)
+        if dirty:
             self.clear()
-            self.caption.dirty = True
-        else:
-            self.animate_time = 0
-        return self.dirty
 
 
 class MainWindow(GuiContainer):
@@ -606,22 +641,24 @@ class OptionsUIApp:
 
         self.background_surface = None
         self.small_font = RenderFont("fonts/FiraCode-Regular.ttf", 14)
-        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1], color=(0, 0, 0, 1))
-        self.panel = GuiContainer(40, 40, 1920 - 80, 1000, color=(0.05, 0.05, 0.05, 1))
+        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1])
+        self.panel = GuiContainer(40, 40, 1920 - 80, 1000, style_args=dict(color=(0.05, 0.05, 0.05, 1)))
         self.window_ui.add_element(self.panel)
         self.fps_display = LoadDisplay(20, 10, self.small_font)
         self.window_ui.add_element(self.fps_display)
-        self.panel2 = GuiContainer(1540, 40, 150, 50, color=(0.1, 0.1, 0.1, 1))
-        self.panel3 = GuiContainer(40, 40, 500, 920, color=(0.1, 0.1, 0.1, 1), overflow_h=800)
+
+        panel_level2_style = dict(color=(0.1, 0.1, 0.1, 1))
+        self.panel2 = GuiContainer(1540, 40, 150, 50, style_args=panel_level2_style)
+        self.panel3 = GuiContainer(40, 40, 500, 920, style_args=panel_level2_style, overflow_h=800)
         self.panel.add_element(self.panel2)
         self.panel.add_element(self.panel3)
-        textarea = TextArea(580, 40, 200, 200, self.small_font, color=(0.1, 0.1, 0.1, 1))
+        textarea = TextArea(580, 40, 200, 200, self.small_font, style_args=panel_level2_style)
         self.panel.add_element(textarea)
-        btn = Button(15, 5, 'LOREM IPSUM', self.small_font, color=(0.6, 0.2, 0.2, 1))
+        btn = Button(15, 5, 'LOREM IPSUM', self.small_font)
         self.panel2.add_element(btn)
-
-        self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
-        self.vbo = Vbo(self.small_font.id_tex)
+        self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w, style_args={
+            'color': (1, 1, 1, 1)
+        }))
         self.running = True
         self.show_fps = True
         self.toggle_click = False
@@ -648,8 +685,9 @@ class OptionsUIApp:
             idle_time = self.clock.tick(FRAMERATE)
             self.process_events()
             self.window_ui.update(runtime, idle_time)
-            self.window_ui.draw(self.vbo, 0)
+            self.window_ui.draw()
             pygame.display.flip()
+
 
 if __name__ == '__main__':
     app = OptionsUIApp()
