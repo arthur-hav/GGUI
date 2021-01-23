@@ -69,7 +69,7 @@ class Widget:
         for element in self.elements:
             self.dirty = self.dirty or element.update(frame_time)
         if self.animation_ratio:
-            self.animation_ratio = max(0, self.animation_ratio - (frame_time) / (1000 * self.fade_timer))
+            self.animation_ratio = max(0, self.animation_ratio - frame_time / (1000 * self.fade_timer))
             self.dirty = True
         return self.dirty
 
@@ -126,10 +126,10 @@ class Widget:
     def mouse_wheel(self, relative_y):
         pass
 
-    def mouse_down(self, x, y, buttons):
+    def mouse_down(self, x, y, button):
         if self.hovered:
             for element in self.elements:
-                element.mouse_down(self.to_element_x(x), self.to_element_y(y), buttons)
+                element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
             if not self.clicked and self.style.click_color:
                 self._color_start = self.get_color()
                 self.fade_timer = self.style.fade_in_time
@@ -461,7 +461,6 @@ class GuiContainer(OverflowWidget):
         return GL_RGBA
 
     def clear(self):
-        glBindTexture(GL_TEXTURE_2D, 0)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glClearColor(*self.get_color())
         glClear(GL_COLOR_BUFFER_BIT)
@@ -504,10 +503,15 @@ class GuiContainer(OverflowWidget):
 
 
 class TextOverlay(GuiContainer):
-    def __init__(self, x, y, text, font):
-        self.render_string = RenderString(0, font.min_top, text, font, style_args={'color': (1, 1, 1, 1)})
+    def __init__(self, x, y, text, font, **kwargs):
+        if 'style_args' not in kwargs:
+            kwargs['style_args'] = {
+                'color': (1, 1, 1, 1)
+            }
+        self.render_string = RenderString(0, font.min_top, text, font, **kwargs)
         super().__init__(x, y, self.render_string.w, self.render_string.h)
         self.add_element(self.render_string)
+
 
 class ScrollBar(Widget):
     def __init__(self, window):
@@ -537,9 +541,9 @@ class ScrollBar(Widget):
         self.window.dirty = True
         self.dirty = True
 
-    def mouse_down(self, x, y, buttons):
-        super().mouse_down(x, y, buttons)
-        if not buttons[0]:
+    def mouse_down(self, x, y, button):
+        super().mouse_down(x, y, button)
+        if button != 1:
             return
         if self.hovered:
             self.drag_start = (x, y)
@@ -567,7 +571,7 @@ class ScrollBar(Widget):
 class TextArea(GuiContainer):
     def __init__(self, x, y, w, h, font, **kwargs):
         super().__init__(x, y, w, h, **kwargs)
-        self.render_string = RenderString(0, font.min_top, '', font, max_w=self.w)
+        self.render_string = RenderString(0, font.min_top, '', font, max_w=self.w, style_args={'color': (1, 1, 1, 1)})
         self.add_element(self.render_string)
         self.focus = False
 
@@ -580,8 +584,8 @@ class TextArea(GuiContainer):
             self.render_string.string = self.render_string.string + key_char
         self.clear()
 
-    def mouse_down(self, x, y, buttons):
-        if not buttons[0]:
+    def mouse_down(self, x, y, button):
+        if button != 1:
             return
         if self.hovered:
             self.focus = True
@@ -597,7 +601,7 @@ class Button(GuiContainer):
             'color': (0.6, 0.2, 0.2, 1),
             'hover_color': (0.7, 0.3, 0.3, 1),
             'click_color': (0.0, 1, 0, 1),
-            'fade_out_time': 0.5,
+            'fade_out_time': 0.35,
             'border_color': (1, 1, 1, 1),
             'border_line_w': 1
         }
@@ -633,13 +637,14 @@ class MainWindow(GuiContainer):
             if event.type == pygame.KEYDOWN:
                 self.key_down(event.key, event.unicode)
             if event.type == pygame.MOUSEBUTTONDOWN:
-                self.mouse_down(*pygame.mouse.get_pos(), pygame.mouse.get_pressed(num_buttons=5))
+                self.mouse_down(*pygame.mouse.get_pos(), event.button)
             if event.type == pygame.MOUSEWHEEL:
                 self.mouse_wheel(event.y)
             if event.type == pygame.MOUSEBUTTONUP:
                 self.mouse_up(*pygame.mouse.get_pos())
             if event.type == pygame.MOUSEMOTION:
                 self.check_mouse(*pygame.mouse.get_pos())
+
 
 class OptionsUIApp:
     def __init__(self):
@@ -662,11 +667,11 @@ class OptionsUIApp:
         glDepthFunc(GL_LEQUAL)
         glEnable(GL_BLEND)
         glEnable(GL_TEXTURE_2D)
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, GL_ONE)
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE)
 
         self.background_surface = None
         self.small_font = RenderFont("fonts/FiraCode-Regular.ttf", 14)
-        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1])
+        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1], style_args=dict(color=(0.05, 0.05, 0.05, 1)))
         self.panel = GuiContainer(40, 40, 1920 - 80, 1000, style_args=dict(color=(0.05, 0.05, 0.05, 1)))
         self.window_ui.add_element(self.panel)
         self.load_display = TextOverlay(20, 10, '000.0 load', self.small_font)
@@ -693,22 +698,26 @@ class OptionsUIApp:
         t0 = time.time_ns()
         t1 = t0
         load_buff = []
+        pygame.display.flip()
         while self.window_ui.running:
+            frame_time = t1 - t0
             t0 = time.time_ns()
             self.clock.tick(FRAMERATE)
             t_run_0 = time.time_ns()
             if load_buff:
                 self.load_display.clear()
                 load = sum(load_buff) / len(load_buff)
-                if len(load_buff) > 100:
+                if len(load_buff) > FRAMERATE:
                     load_buff.pop(0)
                 self.load_display.render_string.string = f'{load:.1f}% load'
-            load_buff.append(100 * (t1 - t_run_0) / max((t1 - t0), 1))
             self.window_ui.process_events()
-            self.window_ui.update(t0 - t1 / 10**6)
+            self.window_ui.update(frame_time / 10**6)
             self.window_ui.draw()
             pygame.display.flip()
             t1 = time.time_ns()
+            if frame_time:
+                load_buff.append(100 * (t1 - t_run_0) / frame_time)
+
 
 
 if __name__ == '__main__':
