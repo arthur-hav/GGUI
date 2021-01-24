@@ -23,9 +23,9 @@ class Style:
                  border_line_w=0,
                  fade_in_time=0.0,
                  fade_out_time=0.0):
-        self.default_color = color
-        self.hover_color = hover_color
-        self.click_color = click_color
+        self.default_color = self.premultiply(color)
+        self.hover_color = self.premultiply(hover_color)
+        self.click_color = self.premultiply(click_color)
         self.fade_in_time = fade_in_time
         self.fade_out_time = fade_out_time
         self.border_color = border_color
@@ -38,6 +38,11 @@ class Style:
     @property
     def transparent(self):
         return self.default_color[3] < 1.0
+
+    def premultiply(self, color):
+        if not color:
+            return color
+        return color[0] * color[3], color[1] * color[3], color[2] * color[3], color[3]
 
     def __str__(self):
         return f'#{int(255 * self.default_color[0]):02X}{int(255 * self.default_color[1]):02X}' \
@@ -323,13 +328,13 @@ class RenderFont:
                     for i in range(self.line_height):
                         tex_array.append([])
                         for j in range(self.line_height * MAGIC_NUMBER):
-                            tex_array[-1].append(bytes([255, 255, 255, 0]))
+                            tex_array[-1].append(bytes([0, 0, 0, 0]))
                 start_i = (enum // MAGIC_NUMBER) * self.line_height
                 start_j = (enum % MAGIC_NUMBER) * self.line_height
                 for i in range(bitmap.width):
                     for j in range(bitmap.rows):
                         tex_array[start_i + j][start_j + i] = bytes(
-                            [255, 255, 255, bitmap.buffer[j * bitmap.width + i]])
+                            4 * [bitmap.buffer[j * bitmap.width + i]])
             full_binary = b''.join(i for row in tex_array for i in row)
             with open(self.cache_file, 'wb') as f:
                 f.write(full_binary)
@@ -467,7 +472,7 @@ class GuiContainer(OverflowWidget):
     def create_fbo(self, w, h):
         texID = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texID)
-        glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\xff' * 4 * w * h)
+        glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\x00' * 4 * w * h)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
         fb_id = glGenFramebuffers(1)
@@ -477,8 +482,6 @@ class GuiContainer(OverflowWidget):
         return fb_id, texID
 
     def get_mode(self):
-        if not self.style.transparent:
-            return GL_RGB
         return GL_RGBA
 
     def clear(self):
@@ -718,7 +721,7 @@ class OptionsUIApp:
         glDepthFunc(GL_LEQUAL)
         glEnable(GL_BLEND)
         glEnable(GL_TEXTURE_2D)
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE)
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
 
         self.background_surface = None
         self.small_font = RenderFont("fonts/FiraCode-Regular.ttf", 14)
