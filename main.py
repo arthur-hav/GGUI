@@ -21,8 +21,8 @@ class Style:
                  click_color=None,
                  border_color=None,
                  border_line_w=0,
-                 fade_in_time=0,
-                 fade_out_time=0):
+                 fade_in_time=0.0,
+                 fade_out_time=0.0):
         self.default_color = color
         self.hover_color = hover_color
         self.click_color = click_color
@@ -35,13 +35,19 @@ class Style:
     def background(self):
         return self.hover_color or self.border_color
 
+    @property
+    def transparent(self):
+        return self.default_color[3] < 1.0
+
     def __str__(self):
         return f'#{int(255 * self.default_color[0]):02X}{int(255 * self.default_color[1]):02X}' \
                f'{int(255 * self.default_color[2]):02X}{int(255 * self.default_color[3]):02X}'
 
 
 class Widget:
-    def __init__(self, x, y, w=0, h=0, style_args=None, *args, **kwargs):
+    DEFAULT_STYLE = Style()
+
+    def __init__(self, x=0, y=0, w=0, h=0, style=None, *args, **kwargs):
         self.x = x
         self.y = y
         self.w = w
@@ -50,7 +56,9 @@ class Widget:
         self.hovered = False
         self.parent = None
         self.elements = []
-        self.style = Style(**(style_args or {}))
+        if not style:
+            style = self.DEFAULT_STYLE
+        self.style = style
         self.clicked = False
         self.fade_timer = 0
         self.animation_ratio = 0
@@ -67,11 +75,12 @@ class Widget:
 
     def update(self, frame_time):
         for element in self.elements:
-            self.dirty = self.dirty or element.update(frame_time)
+            element.update(frame_time)
         if self.animation_ratio:
             self.animation_ratio = max(0, self.animation_ratio - frame_time / (1000 * self.fade_timer))
             self.dirty = True
-        return self.dirty
+        if self.parent:
+            self.parent.dirty = self.parent.dirty or self.dirty
 
     def get_color(self):
         if self.animation_ratio:
@@ -104,6 +113,9 @@ class Widget:
 
     def bind(self, parent):
         self.parent = parent
+
+    def unbind(self):
+        self.parent = None
 
     def mouse_enter(self):
         if not self.hovered and not self.clicked and self.style.hover_color:
@@ -236,16 +248,19 @@ class OverflowWidget(Widget):
                 self._scrollbar.scroll()
 
     def bind(self, parent):
-        if not self.overflow_h and not self.overflow_w:
-            self.parent = parent
-            return
-        if self.parent:
-            self.parent.elements.remove(self._scrollbar)
-        else:
-            self._scrollbar = ScrollBar(window=self)
-        parent.elements.append(self._scrollbar)
-        self._scrollbar.bind(parent)
-        self.parent = parent
+        if self.overflow_h or self.overflow_w:
+            if self.parent:
+                self.parent.elements.remove(self._scrollbar)
+            else:
+                self._scrollbar = ScrollBar(window=self)
+            parent.elements.append(self._scrollbar)
+            self._scrollbar.bind(parent)
+        super().bind(parent)
+
+    def unbind(self):
+        if self.overflow_h or self.overflow_w and self.parent:
+             self.parent.elements.remove(self._scrollbar)
+        super().unbind()
 
     def to_element_x(self, x):
         return x - self.x - self.offset_x
@@ -351,6 +366,8 @@ class Vbo:
 
 
 class RenderString(Widget):
+    DEFAULT_STYLE = Style(color=(1, 1, 1, 1))
+
     def __init__(self, x, y, string, render_font, wrap=WRAP_WORDS, max_w=None, **kwargs):
         super().__init__(x, y, **kwargs)
         self.max_w = max_w
@@ -440,6 +457,8 @@ class RenderString(Widget):
 
 
 class GuiContainer(OverflowWidget):
+    DEFAULT_STYLE = Style(color=(0, 0, 0, 1))
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fbo, self.fbo_tex = self.create_fbo(self.total_w, self.total_h)
@@ -458,6 +477,8 @@ class GuiContainer(OverflowWidget):
         return fb_id, texID
 
     def get_mode(self):
+        if not self.style.transparent:
+            return GL_RGB
         return GL_RGBA
 
     def clear(self):
@@ -470,6 +491,12 @@ class GuiContainer(OverflowWidget):
             self.draw_background(self)
             self.x, self.y, self.w, self.h = x, y, w, h
         super().clear()
+
+    def draw(self, force=False):
+        for element in self.elements:
+            if element.dirty:
+                self.clear()
+        return super().draw(force)
 
     def parent_draw(self):
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
@@ -503,24 +530,19 @@ class GuiContainer(OverflowWidget):
 
 
 class TextOverlay(GuiContainer):
+    DEFAULT_STYLE = Style(color=(0, 1, 0, 0))
+
     def __init__(self, x, y, text, font, **kwargs):
-        if 'style_args' not in kwargs:
-            kwargs['style_args'] = {
-                'color': (1, 1, 1, 1)
-            }
         self.render_string = RenderString(0, font.min_top, text, font, **kwargs)
         super().__init__(x, y, self.render_string.w, self.render_string.h)
         self.add_element(self.render_string)
 
 
 class ScrollBar(Widget):
+    DEFAULT_STYLE = Style(color=(1, 1, 1, 0.1), hover_color=(1, 1, 1, 0.2), click_color=(1, 1, 1, 1))
+
     def __init__(self, window):
-        style_args = {
-            'color': (1, 1, 1, 0.1),
-            'hover_color': (1, 1, 1, 0.2),
-            'click_color': (1, 1, 1, 1)
-        }
-        super().__init__(window.x + window.w - 8, window.y, 8, window.h ** 2 // window.total_h, style_args=style_args)
+        super().__init__(window.x + window.w - 8, window.y, 8, window.h ** 2 // window.total_h)
         self.drag_start = None
         self.window = window
         self.hovered = False
@@ -569,9 +591,11 @@ class ScrollBar(Widget):
 
 
 class TextArea(GuiContainer):
-    def __init__(self, x, y, w, h, font, **kwargs):
+    def __init__(self, x, y, w, h, font, placeholder='', **kwargs):
         super().__init__(x, y, w, h, **kwargs)
-        self.render_string = RenderString(0, font.min_top, '', font, max_w=self.w, style_args={'color': (1, 1, 1, 1)})
+        self.string = ''
+        self.placeholder = placeholder
+        self.render_string = RenderString(0, font.min_top, placeholder, font, max_w=self.w)
         self.add_element(self.render_string)
         self.focus = False
 
@@ -579,56 +603,83 @@ class TextArea(GuiContainer):
         if not self.focus:
             return
         if keycode == pygame.K_BACKSPACE:
-            self.render_string.string = self.render_string.string[:-1]
+            self.string = self.string[:-1]
         else:
-            self.render_string.string = self.render_string.string + key_char
-        self.clear()
+            self.string = self.string + key_char
+        self.render_string.string = self.string
 
     def mouse_down(self, x, y, button):
         if button != 1:
             return
         if self.hovered:
             self.focus = True
+            if not self.string:
+                self.render_string.string = self.string
         else:
             self.focus = False
+            if not self.string:
+                self.render_string.string = self.placeholder
 
 
 class Button(GuiContainer):
-    def __init__(self, x, y, text, font, padding_x=16, padding_y=8):
+    def __init__(self, x, y, w, h, text, font, padding_x=16, padding_y=8, **kwargs):
         self.overflow_w, self.overflow_h = 0, 0
         self.caption = TextOverlay(padding_x, padding_y, text, font)
-        style_args = {
-            'color': (0.6, 0.2, 0.2, 1),
-            'hover_color': (0.7, 0.3, 0.3, 1),
-            'click_color': (0.0, 1, 0, 1),
-            'fade_out_time': 0.35,
-            'border_color': (1, 1, 1, 1),
-            'border_line_w': 1
-        }
-        super().__init__(x, y, self.caption.w + 2 * padding_x, self.caption.h + 2 * padding_y)
-        self.bg = Widget(0, 0, self.w, self.h, style_args=style_args)
+        super().__init__(x, y, w or self.caption.w + 2 * padding_x, h or self.caption.h + 2 * padding_y)
+        self.bg = Widget(0, 0, self.w, self.h, **kwargs)
         self.add_element(self.bg)
         self.add_element(self.caption)
 
-    def update(self, frame_time):
-        super().update(frame_time)
-        if self.bg.dirty:
-            self.clear()
-        return self.dirty or self.cleared
 
+class DropDown(GuiContainer):
+    DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
+
+    def __init__(self, x, y, w, h, top_text, option_list, font, **kwargs):
+        if 'style' not in kwargs:
+            kwargs['style'] = self.DEFAULT_STYLE
+        self.button = Button(0, 0, w, h, top_text, font, style=kwargs['style'])
+        options_h = 0
+        self.options = []
+        for text in option_list:
+            option = Button(0, 0, w, h, text, font, style=kwargs['style'])
+            option.y = options_h
+            options_h += option.h
+            self.options.append(option)
+        total_h = options_h + self.button.h
+        max_h = kwargs.get('max_h', total_h)
+        overflow_h = total_h - max_h
+        self.drop_down = GuiContainer(0, self.button.h, w, max_h - self.button.h, style=Style(color=(1, 1, 1, 0)), overflow_h=overflow_h)
+        for option in self.options:
+            self.drop_down.add_element(option)
+        super().__init__(x, y, w, max_h, style=Style(color=(1, 1, 1, 0)))
+        self.add_element(self.button)
+        self.focus = False
+
+    def mouse_down(self, x, y, button):
+        super(DropDown, self).mouse_down(x, y, button)
+        if button != 1:
+            return
+        if self.hovered and not self.focus:
+            self.focus = True
+            self.add_element(self.drop_down)
+            self.drop_down.clear()
+        elif self.focus:
+            self.elements.remove(self.drop_down)
+            self.drop_down.unbind()
+            self.clear()
+            self.focus = False
+
+    def hover_pred(self, x, y):
+        if not self.focus:
+            return self.button.hover_pred(self.to_element_x(x), self.to_element_y(y))
+        return super().hover_pred(x, y)
 
 class MainWindow(GuiContainer):
+    DEFAULT_STYLE = Style(color=(0, 0, 0, 1))
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.running = True
-
-    def get_mode(self):
-        return GL_RGB
-
-    def update(self, frame_time):
-        super().update(frame_time)
-        self.clear()
-        return True
 
     def process_events(self):
         for event in pygame.event.get():
@@ -671,24 +722,26 @@ class OptionsUIApp:
 
         self.background_surface = None
         self.small_font = RenderFont("fonts/FiraCode-Regular.ttf", 14)
-        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1], style_args=dict(color=(0.05, 0.05, 0.05, 1)))
-        self.panel = GuiContainer(40, 40, 1920 - 80, 1000, style_args=dict(color=(0.05, 0.05, 0.05, 1)))
+        self.window_ui = MainWindow(0, 0, self.options.resolution[0], self.options.resolution[1])
+        panel_level1_style = Style(color=(0.05, 0.05, 0.05, 1))
+        self.panel = GuiContainer(40, 40, 1920 - 80, 1000, style=panel_level1_style)
         self.window_ui.add_element(self.panel)
         self.load_display = TextOverlay(20, 10, '000.0 load', self.small_font)
         self.window_ui.add_element(self.load_display)
-
-        panel_level2_style = dict(color=(0.1, 0.1, 0.1, 1))
-        self.panel2 = GuiContainer(1540, 40, 150, 50, style_args=panel_level2_style)
-        self.panel3 = GuiContainer(40, 40, 500, 920, style_args=panel_level2_style, overflow_h=800)
+        panel_level2_style = Style(color=(0.1, 0.1, 0.1, 1))
+        self.panel2 = GuiContainer(1540, 40, 150, 50, style=panel_level2_style)
+        self.panel3 = GuiContainer(40, 40, 500, 920, style=panel_level2_style, overflow_h=800)
         self.panel.add_element(self.panel2)
         self.panel.add_element(self.panel3)
-        textarea = TextArea(580, 40, 200, 200, self.small_font, style_args=panel_level2_style)
+        textarea = TextArea(580, 40, 200, 200, self.small_font, placeholder='Type here!', style=panel_level2_style)
         self.panel.add_element(textarea)
-        btn = Button(15, 5, 'LOREM IPSUM', self.small_font)
-        self.panel2.add_element(btn)
-        self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w, style_args={
-            'color': (1, 1, 1, 1),
-        }))
+        btn_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.2, 0.4, 0.2, 1), click_color=(0.5, 0.5, 0.5, 1),
+                          fade_out_time=0.35, border_color=(1, 1, 1, 1), border_line_w=1)
+        select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(10)],
+                          self.small_font, style=btn_style, max_h=200)
+        self.panel.add_element(select)
+        self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
+        self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
         self.running = True
         self.show_fps = True
         self.toggle_click = False
@@ -717,7 +770,6 @@ class OptionsUIApp:
             t1 = time.time_ns()
             if frame_time:
                 load_buff.append(100 * (t1 - t_run_0) / frame_time)
-
 
 
 if __name__ == '__main__':
