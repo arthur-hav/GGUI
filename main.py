@@ -189,26 +189,20 @@ class Widget:
         if self.style.border_color and self.style.border_line_w:
             self.gl_draw_rectangle(self.style.border_color, self.texture, container.fbo,
                                    container.total_w, container.total_h)
-            self.x += self.style.border_line_w
-            self.y += self.style.border_line_w
-            self.w -= self.style.border_line_w * 2
-            self.h -= self.style.border_line_w * 2
+            border_w = self.style.border_line_w
             self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
-                                   container.total_w, container.total_h)
-            self.x -= self.style.border_line_w
-            self.y -= self.style.border_line_w
-            self.w += self.style.border_line_w * 2
-            self.h += self.style.border_line_w * 2
+                                   container.total_w, container.total_h, border_w, border_w, -2*border_w, -2*border_w)
         else:
             self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
                                    container.total_w, container.total_h)
 
-    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h):
+    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0):
         glBindTexture(GL_TEXTURE_2D, texture)
         glBindFramebuffer(GL_FRAMEBUFFER, fbo)
         glViewport(0, 0, viewort_w, viewport_h)
-        x, y, w, h = self.x / viewort_w, 1 - (self.y + self.h) / viewport_h, \
-                     self.w / viewort_w, self.h / viewport_h
+
+        x, y, w, h = (self.x + off_x) / viewort_w, 1 - (self.y + self.h + off_y + off_h) / viewport_h, \
+                     (self.w + off_w) / viewort_w, (self.h + off_h) / viewport_h
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
         glColor4f(*color)
         glBegin(GL_TRIANGLES)
@@ -225,6 +219,12 @@ class Widget:
     def add_element(self, element):
         self.elements.append(element)
         element.bind(self)
+
+    def reset(self):
+        self.hovered = False
+        self.clicked = False
+        self.animation_ratio = 0
+        self.clear()
 
 
 class OverflowWidget(Widget):
@@ -496,12 +496,13 @@ class GuiContainer(OverflowWidget):
         super().clear()
 
     def draw(self, force=False):
-        for element in self.elements:
-            if element.dirty:
-                self.clear()
+        if self.dirty:
+            self.clear()
         return super().draw(force)
 
     def parent_draw(self):
+        if self.__class__.__name__ =='Button':
+            print('PD', self.get_color())
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
         glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo if self.parent is not None else 0)
         w_disp = self.parent.total_w if self.parent else self.total_w
@@ -626,11 +627,8 @@ class TextArea(GuiContainer):
 
 class Button(GuiContainer):
     def __init__(self, x, y, w, h, text, font, padding_x=16, padding_y=8, **kwargs):
-        self.overflow_w, self.overflow_h = 0, 0
         self.caption = TextOverlay(padding_x, padding_y, text, font)
-        super().__init__(x, y, w or self.caption.w + 2 * padding_x, h or self.caption.h + 2 * padding_y)
-        self.bg = Widget(0, 0, self.w, self.h, **kwargs)
-        self.add_element(self.bg)
+        super().__init__(x, y, w or self.caption.w + 2 * padding_x, h or self.caption.h + 2 * padding_y, **kwargs)
         self.add_element(self.caption)
 
 
@@ -651,7 +649,8 @@ class DropDown(GuiContainer):
         total_h = options_h + self.button.h
         max_h = kwargs.get('max_h', total_h)
         overflow_h = total_h - max_h
-        self.drop_down = GuiContainer(0, self.button.h, w, max_h - self.button.h, style=Style(color=(1, 1, 1, 0)), overflow_h=overflow_h)
+        self.drop_down = GuiContainer(0, self.button.h, w, max_h - self.button.h,
+                                      style=Style(color=(1, 1, 1, 0)), overflow_h=overflow_h)
         for option in self.options:
             self.drop_down.add_element(option)
         super().__init__(x, y, w, max_h, style=Style(color=(1, 1, 1, 0)))
@@ -670,7 +669,10 @@ class DropDown(GuiContainer):
             self.elements.remove(self.drop_down)
             self.drop_down.unbind()
             self.clear()
+            self.drop_down.clear()
             self.focus = False
+            for option in self.options:
+                option.reset()
 
     def hover_pred(self, x, y):
         if not self.focus:
@@ -739,9 +741,12 @@ class OptionsUIApp:
         textarea = TextArea(580, 40, 200, 200, self.small_font, placeholder='Type here!', style=panel_level2_style)
         self.panel.add_element(textarea)
         btn_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.2, 0.4, 0.2, 1), click_color=(0.5, 0.5, 0.5, 1),
-                          fade_out_time=0.35, border_color=(1, 1, 1, 1), border_line_w=1)
+                          fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
+
+        select_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.25, 0.4, 0.25, 1),
+                             fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
         select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(10)],
-                          self.small_font, style=btn_style, max_h=200)
+                          self.small_font, style=select_style, max_h=200)
         self.panel.add_element(select)
         self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
         self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
