@@ -67,22 +67,31 @@ class Widget:
         self._color_end = self.style.default_color
         self.texture = 0
         self.cleared = False
-        self.direct_rendering = not self.style.transparent
+        self.direct_rendering = True
 
-    def is_offbound(self, x, y, w, h):
-        x, y = self.to_element_x(x), self.to_element_y(y)
-        return x + w < 0 or y + h < 0 or x > self.w or y > self.h
+    def overlaps(self, x, y, w, h):
+        s_fbo, fbo_w, fbo_h, s_x, s_y = self.get_draw_parent_fbo()
+        rect_1 = pygame.rect.Rect(s_x, s_y, self.w, self.h)
+        rect_2 = pygame.rect.Rect(x, y, w, h)
+        return rect_1.colliderect(rect_2)
 
     def clear(self):
         self.cleared = True
 
-    def set_redraw(self):
+    def set_redraw(self, overlap_elem=None):
+        if not overlap_elem:
+            overlap_elem = self
         stk = self.elements[:]
         while stk:
             element = stk.pop(0)
             for son in element.elements:
                 stk.append(son)
-            if element.draw_parent == self or element.draw_parent == self.draw_parent:
+            e_fbo, fbo_w, fbo_h, e_x, e_y = element.get_draw_parent_fbo()
+
+            if element.draw_parent == self.draw_parent:
+                if overlap_elem.overlaps(e_x, e_y, element.w, element.h):
+                    element.dirty = 1
+            if element.draw_parent == self:
                 element.dirty = 1
         self.dirty = 1
         if self.style.transparent and self.draw_parent:
@@ -190,7 +199,7 @@ class Widget:
         if self.hovered:
             for element in self.elements:
                 element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
-            redraw = self.clicked and self.style.click_color
+            redraw = not self.clicked and self.style.click_color
             color_start = self.get_color()
             self.clicked = True
             if redraw:
@@ -268,6 +277,8 @@ class Widget:
 
     def add_element(self, element):
         self.elements.append(element)
+        if element.style.transparent:
+            self.direct_rendering = False
         element.bind(self)
 
     def reset(self):
@@ -275,6 +286,7 @@ class Widget:
         self.clicked = False
         self.animation_ratio = 0
         self.clear()
+        self.set_redraw()
 
 
 class OverflowWidget(Widget):
@@ -322,7 +334,6 @@ class OverflowWidget(Widget):
         return x - self.x - self.offset_x
 
     def to_element_y(self, y):
-        print(self, y, '->', y - self.offset_y + self.overflow_h - self.y)
         return y - self.offset_y + self.overflow_h - self.y
 
 
@@ -549,7 +560,6 @@ class GuiContainer(OverflowWidget):
             return
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glClearColor(*self.get_color())
-        print('CLR', self, self.get_color(), self.animation_ratio)
         glClear(GL_COLOR_BUFFER_BIT)
         if self.style.background:
             x, y, w, h = self.x, self.y, self.w, self.h
@@ -589,7 +599,7 @@ class GuiContainer(OverflowWidget):
 
 
 class TextOverlay(GuiContainer):
-    DEFAULT_STYLE = Style(color=(0, 1, 0, 0))
+    DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
 
     def __init__(self, x, y, text, font, **kwargs):
         self.render_string = RenderString(0, font.min_top, text, font, **kwargs)
@@ -816,7 +826,7 @@ class OptionsUIApp:
                 self.load_display.render_string.string = f'{load:.1f}% load'
             self.window_ui.process_events()
             self.window_ui.update(frame_time / 10**6)
-            self.window_ui.draw(True)
+            self.window_ui.draw()
             pygame.display.flip()
             t1 = time.time_ns()
             if frame_time:
