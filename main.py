@@ -3,7 +3,6 @@ from OpenGL.GL import *
 import freetype
 import numpy
 import time
-from collections import defaultdict
 
 WRAP_CHAR = 'char'
 WRAP_WORDS = 'words'
@@ -14,7 +13,6 @@ Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos
 Cras blandit eget arcu sed maximus. Suspendisse faucibus, quam nec hendrerit placerat, ipsum dolor gravida diam, vitae posuere enim justo nec quam. Fusce arcu neque, lacinia vitae magna nec, finibus maximus urna. Phasellus congue varius nibh. Morbi vestibulum a nisl eget luctus. Quisque condimentum nulla ut turpis rutrum, ut pharetra eros rutrum. Nam vel pulvinar ex. Lorem ipsum dolor sit amet, consectetur adipiscing elit. """
 FRAMERATE = 60
 
-
 class Style:
     def __init__(self, color=(0, 0, 0, 0),
                  hover_color=None,
@@ -22,10 +20,12 @@ class Style:
                  border_color=None,
                  border_line_w=0,
                  fade_in_time=0.0,
-                 fade_out_time=0.0):
+                 fade_out_time=0.0,
+                 transparent=None):
         self.default_color = self.premultiply(color)
         self.hover_color = self.premultiply(hover_color)
         self.click_color = self.premultiply(click_color)
+        self.transparent = transparent if transparent is not None else self.default_color[3] < 1.0
         self.fade_in_time = fade_in_time
         self.fade_out_time = fade_out_time
         self.border_color = border_color
@@ -34,10 +34,6 @@ class Style:
     @property
     def background(self):
         return self.hover_color or self.border_color
-
-    @property
-    def transparent(self):
-        return self.default_color[3] < 1.0
 
     def premultiply(self, color):
         if not color:
@@ -57,7 +53,7 @@ class Widget:
         self.y = y
         self.w = w
         self.h = h
-        self.dirty = True
+        self.dirty = 2
         self.hovered = False
         self.parent = None
         self.elements = []
@@ -69,23 +65,61 @@ class Widget:
         self.animation_ratio = 0
         self._color_start = self.style.default_color
         self._color_end = self.style.default_color
-        self.cleared = False
         self.texture = 0
+        self.cleared = False
+        self.direct_rendering = not self.style.transparent
+
+    def is_offbound(self, x, y, w, h):
+        x, y = self.to_element_x(x), self.to_element_y(y)
+        return x + w < 0 or y + h < 0 or x > self.w or y > self.h
 
     def clear(self):
         self.cleared = True
 
+    def set_redraw(self):
+        stk = self.elements[:]
+        while stk:
+            element = stk.pop(0)
+            for son in element.elements:
+                stk.append(son)
+            if element.draw_parent == self or element.draw_parent == self.draw_parent:
+                element.dirty = 1
+        self.dirty = 1
+        if self.style.transparent and self.draw_parent:
+            self.draw_parent.clear()
+            self.draw_parent.set_redraw()
+
+    @property
+    def draw_parent(self):
+        if self.parent and self.parent.direct_rendering:
+            return self.parent.draw_parent
+        return self.parent
+
     def __repr__(self):
-        return f'{(self.x, self.y, self.w, self.h, str(self.style))}'
+        pres = f"""{self.__class__.__name__}{(self.x, self.y)}"""
+        parent = self.parent
+        while parent:
+            pres = '\t' + pres
+            parent = parent.parent
+        return pres
+
+    def get_draw_parent_fbo(self):
+        if self.parent and self.parent.direct_rendering:
+            fbo, w, h, x_parent, y_parent = self.parent.get_draw_parent_fbo()
+            return fbo, w, h, x_parent + self.x, y_parent + self.y
+        if self.parent:
+            return self.parent.fbo, self.parent.total_w, self.parent.total_h, self.x, self.y
+        return 0, self.w, self.h, self.x, self.y
 
     def update(self, frame_time):
-        for element in self.elements:
-            element.update(frame_time)
         if self.animation_ratio:
             self.animation_ratio = max(0, self.animation_ratio - frame_time / (1000 * self.fade_timer))
-            self.dirty = True
-        if self.parent:
-            self.parent.dirty = self.parent.dirty or self.dirty
+            self.clear()
+            self.set_redraw()
+        for element in self.elements:
+            element.update(frame_time)
+        if self.dirty and self.draw_parent:
+            self.draw_parent.dirty = self.dirty
 
     def get_color(self):
         if self.animation_ratio:
@@ -107,6 +141,7 @@ class Widget:
         return self.x < x < self.x + self.w and self.y < y < self.y + self.h
 
     def check_mouse(self, x, y):
+        # TODO: Check boundaries with is_offbound
         if self.hover_pred(x, y):
             if not self.hovered:
                 self.mouse_enter()
@@ -123,22 +158,30 @@ class Widget:
         self.parent = None
 
     def mouse_enter(self):
-        if not self.hovered and not self.clicked and self.style.hover_color:
-            self._color_start = self.get_color()
+        redraw = not self.hovered and not self.clicked and self.style.hover_color
+        color_start = self.get_color()
+        self.hovered = True
+        if redraw:
+            self._color_start = color_start
             self.fade_timer = self.style.fade_in_time
             self.animation_ratio = 1.0 if self.fade_timer else 0
             self._color_end = self.style.hover_color
-            self.dirty = True
-        self.hovered = True
+            self.dirty = 1
+            self.clear()
+            self.set_redraw()
 
     def mouse_leave(self):
-        if not self.clicked and self.style.hover_color:
-            self._color_start = self.get_color()
+        redraw = not self.clicked and self.style.hover_color
+        color_start = self.get_color()
+        self.hovered = False
+        if redraw:
+            self._color_start = color_start
             self.fade_timer = self.style.fade_out_time
             self.animation_ratio = 1.0 if self.fade_timer else 0
             self._color_end = self.style.default_color
-            self.dirty = True
-        self.hovered = False
+            self.dirty = 1
+            self.clear()
+            self.set_redraw()
 
     def mouse_wheel(self, relative_y):
         pass
@@ -147,60 +190,67 @@ class Widget:
         if self.hovered:
             for element in self.elements:
                 element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
-            if not self.clicked and self.style.click_color:
-                self._color_start = self.get_color()
+            redraw = self.clicked and self.style.click_color
+            color_start = self.get_color()
+            self.clicked = True
+            if redraw:
+                self._color_start = color_start
                 self.fade_timer = self.style.fade_in_time
                 self.animation_ratio = 1.0 if self.fade_timer else 0
                 self._color_end = self.style.click_color
-                self.dirty = True
-            self.clicked = True
+                self.dirty = 1
+                self.clear()
+                self.set_redraw()
 
     def mouse_up(self, x, y):
         for element in self.elements:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
-        if self.clicked and self.style.click_color:
-            self._color_start = self.get_color()
+        redraw = self.clicked and self.style.click_color
+        color_start = self.get_color()
+        self.clicked = False
+        if redraw:
+            self._color_start = color_start
             self._color_end = self.style.hover_color if self.hovered else self.style.default_color
             self.fade_timer = self.style.fade_out_time
             self.animation_ratio = 1.0 if self.fade_timer else 0
             self.clicked = False
-            self.dirty = True
-        self.clicked = False
+            self.dirty = 1
+            self.clear()
+            self.set_redraw()
 
     def key_down(self, keycode, key_char):
         for element in self.elements:
             element.key_down(keycode, key_char)
 
     def draw(self, force=False):
-        dirty = False
-        for element in self.elements:
-            dirty = element.draw(self.cleared) or dirty
-        if dirty or self.dirty or force or self.cleared:
+        if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
-        retval = dirty or self.dirty or self.cleared
-        self.dirty = False
+        for element in self.elements:
+            element.draw()
+        if not self.direct_rendering and (self.dirty or force):
+            self.parent_draw()
+        self.dirty = max(self.dirty - 1, 0)
         self.cleared = False
-        return retval
 
     def parent_draw(self):
-        self.draw_background(self.parent)
+        fbo, w_parent, h_parent, x, y = self.get_draw_parent_fbo()
+        self.draw_background(fbo, w_parent, h_parent, x, y)
 
-    def draw_background(self, container):
+    def draw_background(self, fbo, w_disp, h_disp, x_disp, y_disp):
         if self.style.border_color and self.style.border_line_w:
-            self.gl_draw_rectangle(self.style.border_color, self.texture, container.fbo,
-                                   container.total_w, container.total_h)
+            self.gl_draw_rectangle(self.style.border_color, self.texture, fbo, w_disp, h_disp,
+                                   off_x=x_disp-self.x, off_y=y_disp-self.y)
             border_w = self.style.border_line_w
-            self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
-                                   container.total_w, container.total_h, border_w, border_w, -2*border_w, -2*border_w)
+            self.gl_draw_rectangle(self.get_color(), self.texture, fbo,
+                                   w_disp, h_disp, border_w+x_disp, border_w+y_disp, -2*border_w, -2*border_w)
         else:
-            self.gl_draw_rectangle(self.get_color(), self.texture, container.fbo,
-                                   container.total_w, container.total_h)
+            self.gl_draw_rectangle(self.get_color(), self.texture, fbo,
+                                   w_disp, h_disp, off_x=x_disp-self.x, off_y=y_disp-self.y)
 
     def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0):
         glBindTexture(GL_TEXTURE_2D, texture)
         glBindFramebuffer(GL_FRAMEBUFFER, fbo)
         glViewport(0, 0, viewort_w, viewport_h)
-
         x, y, w, h = (self.x + off_x) / viewort_w, 1 - (self.y + self.h + off_y + off_h) / viewport_h, \
                      (self.w + off_w) / viewort_w, (self.h + off_h) / viewport_h
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
@@ -235,6 +285,7 @@ class OverflowWidget(Widget):
         self.offset_x = 0
         self.offset_y = kwargs.get('overflow_h', 0)
         self._scrollbar = None
+        self.direct_rendering = self.direct_rendering and not self.overflow_h and not self.overflow_w
 
     @property
     def total_w(self):
@@ -256,10 +307,10 @@ class OverflowWidget(Widget):
         if self.overflow_h or self.overflow_w:
             if self.parent:
                 self.parent.elements.remove(self._scrollbar)
+                self._scrollbar.unbind()
             else:
                 self._scrollbar = ScrollBar(window=self)
-            parent.elements.append(self._scrollbar)
-            self._scrollbar.bind(parent)
+            parent.add_element(self._scrollbar)
         super().bind(parent)
 
     def unbind(self):
@@ -271,6 +322,7 @@ class OverflowWidget(Widget):
         return x - self.x - self.offset_x
 
     def to_element_y(self, y):
+        print(self, y, '->', y - self.offset_y + self.overflow_h - self.y)
         return y - self.offset_y + self.overflow_h - self.y
 
 
@@ -353,9 +405,11 @@ class Vbo:
     def flush(self, widget):
         if not self.vtx_buffer:
             return
+        fbo, w_parent, h_parent, x_disp, y_disp = widget.get_draw_parent_fbo()
+
         glBindTexture(GL_TEXTURE_2D, widget.texture)
-        glBindFramebuffer(GL_FRAMEBUFFER, widget.parent.fbo)
-        glViewport(0, 0, widget.parent.total_w, widget.parent.total_h)
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+        glViewport(0, 0, w_parent, h_parent)
         glEnableClientState(GL_VERTEX_ARRAY)
         glEnableClientState(GL_TEXTURE_COORD_ARRAY)
         glColor4f(*widget.get_color())
@@ -371,7 +425,7 @@ class Vbo:
 
 
 class RenderString(Widget):
-    DEFAULT_STYLE = Style(color=(1, 1, 1, 1))
+    DEFAULT_STYLE = Style(color=(1, 1, 1, 1), transparent=True)
 
     def __init__(self, x, y, string, render_font, wrap=WRAP_WORDS, max_w=None, **kwargs):
         super().__init__(x, y, **kwargs)
@@ -382,6 +436,8 @@ class RenderString(Widget):
         self._render = []
         self.string = string
         self.texture = render_font.texture
+        self.direct_rendering = True
+        self.dirty = 2
 
     @property
     def string(self):
@@ -398,7 +454,10 @@ class RenderString(Widget):
             max_x = max(max_x, cur_x + advance)
             max_y = cur_y
         self.w, self.h = max_x - self.x, max_y - self.y
-        self.dirty = True
+        self.dirty = 1
+        if self.draw_parent:
+            self.draw_parent.clear()
+            self.draw_parent.set_redraw()
 
     def iter_chars(self):
         cur_x, cur_y = self.x, self.y
@@ -426,19 +485,20 @@ class RenderString(Widget):
                 yield char, cur_x, cur_y, advance
                 cur_x += advance
 
-    def parent_draw(self, force=False):
+    def parent_draw(self):
+        fbo, disp_w, disp_h, x_disp, y_disp = self.get_draw_parent_fbo()
         for char, cur_x, cur_y, advance in self.iter_chars():
-            rect = pygame.rect.Rect(cur_x + self.render_font.char_sizes[char][0],
-                                    cur_y - self.render_font.char_sizes[char][1],
+            rect = pygame.rect.Rect(cur_x - (self.x - x_disp) + self.render_font.char_sizes[char][0],
+                                    cur_y - (self.y - y_disp) - self.render_font.char_sizes[char][1],
                                     self.render_font.char_sizes[char][2], self.render_font.char_sizes[char][3])
             x, y = rect.x, rect.y
-            x /= self.parent.total_w
-            y /= self.parent.total_h
+            x /= disp_w
+            y /= disp_h
             w, h = rect.w, rect.h
             tex_i = self.render_font.char_to_tex[char]
             tex_x, tex_y = (tex_i % MAGIC_NUMBER) * self.render_font.line_height, \
                            (tex_i // MAGIC_NUMBER) * self.render_font.line_height
-            w, h = self.render_font.line_height / self.parent.total_w, self.render_font.line_height / self.parent.total_h
+            w, h = self.render_font.line_height / disp_w, self.render_font.line_height / disp_h
             tex_x2, tex_y2 = tex_x + self.render_font.line_height, tex_y + self.render_font.line_height
 
             mul_x = 1.0 / (MAGIC_NUMBER * self.render_font.line_height)
@@ -472,7 +532,7 @@ class GuiContainer(OverflowWidget):
     def create_fbo(self, w, h):
         texID = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texID)
-        glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\x00' * 4 * w * h)
+        glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\x22' * 4 * w * h)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
         fb_id = glGenFramebuffers(1)
@@ -484,32 +544,27 @@ class GuiContainer(OverflowWidget):
     def get_mode(self):
         return GL_RGBA
 
-    def clear(self):
+    def clear(self, cascade=True):
+        if self.cleared:
+            return
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glClearColor(*self.get_color())
+        print('CLR', self, self.get_color(), self.animation_ratio)
         glClear(GL_COLOR_BUFFER_BIT)
         if self.style.background:
             x, y, w, h = self.x, self.y, self.w, self.h
             self.x, self.y, self.w, self.h = 0, self.overflow_h, self.total_w, self.total_h
-            self.draw_background(self)
+            self.draw_background(self.fbo, self.total_w, self.total_h, 0, 0)
             self.x, self.y, self.w, self.h = x, y, w, h
         super().clear()
 
-    def draw(self, force=False):
-        if self.dirty:
-            self.clear()
-        return super().draw(force)
-
     def parent_draw(self):
-        if self.__class__.__name__ =='Button':
-            print('PD', self.get_color())
+        fbo, w_disp, h_disp, x_disp, y_disp = self.get_draw_parent_fbo()
         glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
-        glBindFramebuffer(GL_FRAMEBUFFER, self.parent.fbo if self.parent is not None else 0)
-        w_disp = self.parent.total_w if self.parent else self.total_w
-        h_disp = self.parent.total_h if self.parent else self.total_h
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
         glViewport(0, 0, w_disp, h_disp)
 
-        x, y, w, h = self.x / w_disp, 1 - (self.y + self.h) / h_disp, self.w / w_disp, self.h / h_disp
+        x, y, w, h = x_disp / w_disp, 1 - (y_disp + self.h) / h_disp, self.w / w_disp, self.h / h_disp
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
         tex_x0 = self.offset_x / self.total_w
         tex_y0 = self.offset_y / self.total_h
@@ -564,8 +619,8 @@ class ScrollBar(Widget):
     def scroll(self):
         self.y = min(max(self.y, self.window.y), self.window.y + self.window.h - self.h)
         self.window.offset_y = self.window.overflow_h - (self.y - self.window.y) * (self.window.total_h / self.window.h)
-        self.window.dirty = True
-        self.dirty = True
+        self.draw_parent.clear()
+        self.draw_parent.set_redraw()
 
     def mouse_down(self, x, y, button):
         super().mouse_down(x, y, button)
@@ -576,16 +631,6 @@ class ScrollBar(Widget):
             if not self.y < y < self.y + self.h:  # Jump click
                 self.y = y - self.h // 2
                 self.scroll()
-
-    def mouse_enter(self):
-        super().mouse_enter()
-        self.window.dirty = True
-
-    def mouse_leave(self):
-        super().mouse_leave()
-        if self.drag_start:
-            return
-        self.window.dirty = True
 
     def mouse_up(self, x, y):
         super().mouse_up(x, y)
@@ -664,13 +709,14 @@ class DropDown(GuiContainer):
         if self.hovered and not self.focus:
             self.focus = True
             self.add_element(self.drop_down)
-            self.drop_down.clear()
+            self.clear()
+            self.set_redraw()
         elif self.focus:
             self.elements.remove(self.drop_down)
             self.drop_down.unbind()
-            self.clear()
-            self.drop_down.clear()
             self.focus = False
+            self.clear()
+            self.set_redraw()
             for option in self.options:
                 option.reset()
 
@@ -679,12 +725,14 @@ class DropDown(GuiContainer):
             return self.button.hover_pred(self.to_element_x(x), self.to_element_y(y))
         return super().hover_pred(x, y)
 
+
 class MainWindow(GuiContainer):
     DEFAULT_STYLE = Style(color=(0, 0, 0, 1))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.running = True
+        self.direct_rendering = False
 
     def process_events(self):
         for event in pygame.event.get():
@@ -745,35 +793,30 @@ class OptionsUIApp:
 
         select_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.25, 0.4, 0.25, 1),
                              fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
-        select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(10)],
-                          self.small_font, style=select_style, max_h=200)
+        select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(20)],
+                          self.small_font, style=select_style, max_h=600)
         self.panel.add_element(select)
         self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
         self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
-        self.running = True
-        self.show_fps = True
-        self.toggle_click = False
         self.run()
 
     def run(self):
         t0 = time.time_ns()
         t1 = t0
         load_buff = []
-        pygame.display.flip()
         while self.window_ui.running:
             frame_time = t1 - t0
             t0 = time.time_ns()
             self.clock.tick(FRAMERATE)
             t_run_0 = time.time_ns()
             if load_buff:
-                self.load_display.clear()
                 load = sum(load_buff) / len(load_buff)
                 if len(load_buff) > FRAMERATE:
                     load_buff.pop(0)
                 self.load_display.render_string.string = f'{load:.1f}% load'
             self.window_ui.process_events()
             self.window_ui.update(frame_time / 10**6)
-            self.window_ui.draw()
+            self.window_ui.draw(True)
             pygame.display.flip()
             t1 = time.time_ns()
             if frame_time:

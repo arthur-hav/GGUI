@@ -3,3 +3,4 @@ PyOpenGL_accelerate
 freetype-py
 pygame
 numpy
+snakeviz
