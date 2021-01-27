@@ -162,6 +162,8 @@ class Widget:
 
     def bind(self, parent):
         self.parent = parent
+        if not self.parent.parent:
+            self.dirty = 2
 
     def unbind(self):
         self.parent = None
@@ -315,7 +317,7 @@ class OverflowWidget(Widget):
             for element in self.elements:
                 element.mouse_wheel(relative_y)
             if self.overflow_h:
-                self._scrollbar.y -= 30 * relative_y * self.h / self.total_h
+                self._scrollbar.y -= 30 * relative_y
                 self._scrollbar.scroll()
 
     def to_element_x(self, x):
@@ -806,7 +808,7 @@ class OptionsUIApp:
                           self.small_font, style=select_style, max_h=300)
         self.panel.add_element(select)
         self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
-        self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
+        self.panel3.add_element(TextOverlay(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w - 20))
         self.run()
 
     def run(self):
