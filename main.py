@@ -53,7 +53,7 @@ class Widget:
         self.y = y
         self.w = w
         self.h = h
-        self.dirty = 2
+        self.z = 0
         self.hovered = False
         self.parent = None
         self.elements = []
@@ -68,6 +68,7 @@ class Widget:
         self.texture = 0
         self.cleared = False
         self.direct_rendering = True
+        self.dirty = 0
 
     def overlaps(self, x, y, w, h):
         s_fbo, fbo_w, fbo_h, s_x, s_y = self.get_draw_parent_fbo()
@@ -90,10 +91,10 @@ class Widget:
 
             if element.draw_parent == self.draw_parent:
                 if overlap_elem.overlaps(e_x, e_y, element.w, element.h):
-                    element.dirty = 1
+                    element.dirty = max(element.dirty, 1)
             if element.draw_parent == self:
-                element.dirty = 1
-        self.dirty = 1
+                element.dirty = max(element.dirty, 1)
+        self.dirty = max(self.dirty, 1)
         if self.style.transparent and self.draw_parent:
             self.draw_parent.clear()
             self.draw_parent.set_redraw()
@@ -150,7 +151,6 @@ class Widget:
         return self.x < x < self.x + self.w and self.y < y < self.y + self.h
 
     def check_mouse(self, x, y):
-        # TODO: Check boundaries with is_offbound
         if self.hover_pred(x, y):
             if not self.hovered:
                 self.mouse_enter()
@@ -234,7 +234,8 @@ class Widget:
     def draw(self, force=False):
         if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
-        for element in self.elements:
+
+        for element in sorted(self.elements, key=lambda w: w.z):
             element.draw()
         if not self.direct_rendering and (self.dirty or force):
             self.parent_draw()
@@ -296,7 +297,9 @@ class OverflowWidget(Widget):
         self.overflow_h = kwargs.get('overflow_h', 0)
         self.offset_x = 0
         self.offset_y = kwargs.get('overflow_h', 0)
-        self._scrollbar = None
+        if self.overflow_h or self.overflow_w and not self.parent:
+            self._scrollbar = ScrollBar(window=self)
+            self.add_element(self._scrollbar)
         self.direct_rendering = self.direct_rendering and not self.overflow_h and not self.overflow_w
 
     @property
@@ -311,24 +314,9 @@ class OverflowWidget(Widget):
         if self.hovered:
             for element in self.elements:
                 element.mouse_wheel(relative_y)
-            if self._scrollbar:
+            if self.overflow_h:
                 self._scrollbar.y -= 30 * relative_y * self.h / self.total_h
                 self._scrollbar.scroll()
-
-    def bind(self, parent):
-        if self.overflow_h or self.overflow_w:
-            if self.parent:
-                self.parent.elements.remove(self._scrollbar)
-                self._scrollbar.unbind()
-            else:
-                self._scrollbar = ScrollBar(window=self)
-            parent.add_element(self._scrollbar)
-        super().bind(parent)
-
-    def unbind(self):
-        if self.overflow_h or self.overflow_w and self.parent:
-             self.parent.elements.remove(self._scrollbar)
-        super().unbind()
 
     def to_element_x(self, x):
         return x - self.x - self.offset_x
@@ -336,6 +324,17 @@ class OverflowWidget(Widget):
     def to_element_y(self, y):
         return y - self.offset_y + self.overflow_h - self.y
 
+    def update(self, frame_time):
+        super().update(frame_time)
+        if self.dirty and (self.overflow_h or self.overflow_w):
+            self._scrollbar.dirty = 1
+            self.clear()
+            self.set_redraw()
+
+    def reset(self):
+        super().reset()
+        self.offset_x = 0
+        self.offset_y = self.overflow_h
 
 class Options:
     def __init__(self):
@@ -448,7 +447,7 @@ class RenderString(Widget):
         self.string = string
         self.texture = render_font.texture
         self.direct_rendering = True
-        self.dirty = 2
+        self.dirty = 1
 
     @property
     def string(self):
@@ -539,6 +538,7 @@ class GuiContainer(OverflowWidget):
         super().__init__(*args, **kwargs)
         self.fbo, self.fbo_tex = self.create_fbo(self.total_w, self.total_h)
         self.clear()
+        self.set_redraw()
 
     def create_fbo(self, w, h):
         texID = glGenTextures(1)
@@ -611,24 +611,24 @@ class ScrollBar(Widget):
     DEFAULT_STYLE = Style(color=(1, 1, 1, 0.1), hover_color=(1, 1, 1, 0.2), click_color=(1, 1, 1, 1))
 
     def __init__(self, window):
-        super().__init__(window.x + window.w - 8, window.y, 8, window.h ** 2 // window.total_h)
-        self.drag_start = None
+        super().__init__(window.w - 8, 0, 8, window.h ** 2 // window.total_h)
+        self.drag_start = False
         self.window = window
+        self.z = 1
         self.hovered = False
 
     def hover_pred(self, x, y):
-        return self.x < x < self.x + self.w and self.window.y < y < self.y + self.window.h
+        return self.x < x < self.x + self.w and self.window.overflow_h - self.window.offset_y < y < self.y + self.window.h
 
     def check_mouse(self, x, y):
         super().check_mouse(x, y)
-        if self.drag_start:
-            self.y -= self.drag_start[1] - y
-            self.drag_start = (x, y)
+        if self.clicked:
+            self.y += (y - self.y - self.h // 2) * self.window.total_h / (self.window.h - self.h)
             self.scroll()
 
     def scroll(self):
-        self.y = min(max(self.y, self.window.y), self.window.y + self.window.h - self.h)
-        self.window.offset_y = self.window.overflow_h - (self.y - self.window.y) * (self.window.total_h / self.window.h)
+        self.y = min(max(self.y, 0), self.window.total_h - self.h)
+        self.window.offset_y = self.window.overflow_h - self.y * (self.window.overflow_h / (self.window.total_h - self.h))
         self.draw_parent.clear()
         self.draw_parent.set_redraw()
 
@@ -637,14 +637,12 @@ class ScrollBar(Widget):
         if button != 1:
             return
         if self.hovered:
-            self.drag_start = (x, y)
             if not self.y < y < self.y + self.h:  # Jump click
-                self.y = y - self.h // 2
+                self.y += (y - self.y - self.h//2) * self.window.total_h / (self.window.h - self.h)
                 self.scroll()
 
     def mouse_up(self, x, y):
         super().mouse_up(x, y)
-        self.drag_start = None
         if not self.hovered:
             self.mouse_leave()
 
@@ -714,7 +712,7 @@ class DropDown(GuiContainer):
 
     def mouse_down(self, x, y, button):
         super(DropDown, self).mouse_down(x, y, button)
-        if button != 1:
+        if button != 1 or self.drop_down._scrollbar.clicked:
             return
         if self.hovered and not self.focus:
             self.focus = True
@@ -729,6 +727,7 @@ class DropDown(GuiContainer):
             self.set_redraw()
             for option in self.options:
                 option.reset()
+            self.drop_down.reset()
 
     def hover_pred(self, x, y):
         if not self.focus:
@@ -793,7 +792,7 @@ class OptionsUIApp:
         self.window_ui.add_element(self.load_display)
         panel_level2_style = Style(color=(0.1, 0.1, 0.1, 1))
         self.panel2 = GuiContainer(1540, 40, 150, 50, style=panel_level2_style)
-        self.panel3 = GuiContainer(40, 40, 500, 920, style=panel_level2_style, overflow_h=800)
+        self.panel3 = GuiContainer(40, 40, 500, 920, style=panel_level2_style, overflow_h=8000)
         self.panel.add_element(self.panel2)
         self.panel.add_element(self.panel3)
         textarea = TextArea(580, 40, 200, 200, self.small_font, placeholder='Type here!', style=panel_level2_style)
@@ -804,7 +803,7 @@ class OptionsUIApp:
         select_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.25, 0.4, 0.25, 1),
                              fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
         select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(20)],
-                          self.small_font, style=select_style, max_h=600)
+                          self.small_font, style=select_style, max_h=300)
         self.panel.add_element(select)
         self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
         self.panel3.add_element(RenderString(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w))
