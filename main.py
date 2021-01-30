@@ -5,6 +5,7 @@ import numpy
 import time
 from PIL import Image
 from pubsub import pub
+import uuid
 
 WRAP_CHAR = 'char'
 WRAP_WORDS = 'words'
@@ -14,6 +15,7 @@ Nullam rhoncus massa nec felis luctus hendrerit. Ut rhoncus vehicula diam eu tin
 Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Vivamus bibendum magna justo, consequat sollicitudin risus tincidunt at. Etiam blandit finibus elit, ut facilisis ipsum vehicula eget. Maecenas ultricies erat sed hendrerit condimentum. Aenean semper bibendum elit. Cras molestie posuere metus a euismod. Nunc nec ligula metus. Nam pellentesque, nulla id faucibus interdum, nunc dui molestie turpis, nec semper nulla tortor at nibh. Quisque tempus fermentum egestas. Donec feugiat turpis et dolor vehicula, sed convallis nunc ultricies. Nulla vestibulum odio et sapien facilisis, eget ultrices elit blandit. Nullam a justo porttitor, luctus ex a, venenatis augue. Ut et leo sit amet felis mattis ultricies. Quisque sollicitudin, lorem vitae sagittis viverra, nunc erat finibus tellus, in pharetra felis diam ut elit.
 Cras blandit eget arcu sed maximus. Suspendisse faucibus, quam nec hendrerit placerat, ipsum dolor gravida diam, vitae posuere enim justo nec quam. Fusce arcu neque, lacinia vitae magna nec, finibus maximus urna. Phasellus congue varius nibh. Morbi vestibulum a nisl eget luctus. Quisque condimentum nulla ut turpis rutrum, ut pharetra eros rutrum. Nam vel pulvinar ex. Lorem ipsum dolor sit amet, consectetur adipiscing elit. """
 FRAMERATE = 60
+
 
 class Style:
     def __init__(self, color=(0, 0, 0, 0),
@@ -64,7 +66,7 @@ class MouseEvent(Event):
 class Widget:
     DEFAULT_STYLE = Style(color=(1, 1, 1, 1))
 
-    def __init__(self, x=0, y=0, w=0, h=0, style=None, queue_name=None, *args, **kwargs):
+    def __init__(self, x=0, y=0, w=0, h=0, style=None, *args, **kwargs):
         self.x = x
         self.y = y
         self.w = w
@@ -85,7 +87,16 @@ class Widget:
         self.cleared = False
         self.direct_rendering = True
         self.dirty = 1
-        self.queue_name = queue_name
+        self.uid = str(uuid.uuid4())
+
+    def find_element(self, uid):
+        if self.uid == uid:
+            return self
+        for element in self.elements:
+            searched = element.find_element(uid)
+            if searched:
+                return searched
+        return None
 
     def overlaps(self, x, y, w, h):
         s_fbo, fbo_w, fbo_h, s_x, s_y = self.get_draw_parent_fbo()
@@ -216,9 +227,9 @@ class Widget:
 
     def mouse_down(self, x, y, button):
         if self.hovered:
-            if not self.clicked and self.hovered and self.queue_name:
-                event = MouseEvent({'type': 'click', 'x': x, 'y': y, 'button': button, 'element': self})
-                pub.sendMessage(self.queue_name, event=event)
+            if not self.clicked and self.hovered:
+                event = MouseEvent({'x': x, 'y': y, 'button': button})
+                pub.sendMessage(f'{self.uid}.click', event=event)
             for element in self.elements:
                 element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
             redraw = not self.clicked and self.style.click_color
@@ -238,9 +249,9 @@ class Widget:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
         redraw = self.clicked and self.style.click_color
         color_start = self.get_color()
-        if self.clicked and self.hovered and self.queue_name:
-            event = MouseEvent({'type':'confirm-click', 'x': x, 'y': y, 'button': self.clicked, 'element': self})
-            pub.sendMessage(self.queue_name, event=event)
+        if self.clicked and self.hovered:
+            event = MouseEvent({'x': x, 'y': y, 'button': self.clicked})
+            pub.sendMessage(f'{self.uid}.confirm-click', event=event)
         self.clicked = None
         if redraw:
             self._color_start = color_start
@@ -719,14 +730,15 @@ class Button(GuiContainer):
 class DropDown(GuiContainer):
     DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
 
-    def __init__(self, x, y, w, h, top_text, option_list, font, queue_name=None, **kwargs):
+    def __init__(self, x, y, w, h, top_text, option_list, font, **kwargs):
         if 'style' not in kwargs:
             kwargs['style'] = self.DEFAULT_STYLE
         self.button = Button(0, 0, w, h, top_text, font, style=kwargs['style'])
         options_h = 0
         self.options = []
-        for text in option_list:
-            option = Button(0, 0, w, h, text, font, style=kwargs['style'], queue_name=queue_name)
+        for i, text in enumerate(option_list):
+            queue_args = {}
+            option = Button(0, 0, w, h, text, font, style=kwargs['style'], **queue_args)
             option.y = options_h
             options_h += option.h
             self.options.append(option)
@@ -751,6 +763,9 @@ class DropDown(GuiContainer):
             self.clear()
             self.set_redraw()
         elif self.focus:
+            for i, element in enumerate(self.options):
+                if element.clicked:
+                    pub.sendMessage(f'{self.uid}.select', event=Event({'index': i}))
             self.elements.remove(self.drop_down)
             self.drop_down.unbind()
             self.focus = False
@@ -835,7 +850,7 @@ class OptionsUIApp:
         select_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.25, 0.4, 0.25, 1),
                              fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
         select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(1, 21)],
-                          self.small_font, style=select_style, max_h=300, queue_name='Select_menu')
+                          self.small_font, style=select_style, max_h=300)
 
         image = Widget(600, 600, 1, 1)
         image.load_image('images/Other Load.png')
@@ -844,11 +859,10 @@ class OptionsUIApp:
         def listener(event):
             print(event.__dict__)
 
-        pub.subscribe(listener, 'callback-click')
-        pub.subscribe(listener, 'Select_menu')
+        pub.subscribe(listener, f'{select.uid}.select')
         self.panel.add_element(image)
         self.panel.add_element(select)
-        self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style, queue_name='callback-click'))
+        self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
         self.panel3.add_element(TextOverlay(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w - 20))
         self.run()
 
