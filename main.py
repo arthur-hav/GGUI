@@ -3,6 +3,8 @@ from OpenGL.GL import *
 import freetype
 import numpy
 import time
+from PIL import Image
+from pubsub import pub
 
 WRAP_CHAR = 'char'
 WRAP_WORDS = 'words'
@@ -45,10 +47,24 @@ class Style:
                f'{int(255 * self.default_color[2]):02X}{int(255 * self.default_color[3]):02X}'
 
 
-class Widget:
-    DEFAULT_STYLE = Style()
+class Event:
+    def __init__(self, value_dict):
+        for k, v in value_dict.items():
+            setattr(self, k, v)
 
-    def __init__(self, x=0, y=0, w=0, h=0, style=None, *args, **kwargs):
+
+class KeyboardEvent(Event):
+    pass
+
+
+class MouseEvent(Event):
+    pass
+
+
+class Widget:
+    DEFAULT_STYLE = Style(color=(1, 1, 1, 1))
+
+    def __init__(self, x=0, y=0, w=0, h=0, style=None, queue_name=None, *args, **kwargs):
         self.x = x
         self.y = y
         self.w = w
@@ -60,7 +76,7 @@ class Widget:
         if not style:
             style = self.DEFAULT_STYLE
         self.style = style
-        self.clicked = False
+        self.clicked = None
         self.fade_timer = 0
         self.animation_ratio = 0
         self._color_start = self.style.default_color
@@ -68,7 +84,8 @@ class Widget:
         self.texture = 0
         self.cleared = False
         self.direct_rendering = True
-        self.dirty = 0
+        self.dirty = 1
+        self.queue_name = queue_name
 
     def overlaps(self, x, y, w, h):
         s_fbo, fbo_w, fbo_h, s_x, s_y = self.get_draw_parent_fbo()
@@ -199,11 +216,14 @@ class Widget:
 
     def mouse_down(self, x, y, button):
         if self.hovered:
+            if not self.clicked and self.hovered and self.queue_name:
+                event = MouseEvent({'type': 'click', 'x': x, 'y': y, 'button': button, 'element': self})
+                pub.sendMessage(self.queue_name, event=event)
             for element in self.elements:
                 element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
             redraw = not self.clicked and self.style.click_color
             color_start = self.get_color()
-            self.clicked = True
+            self.clicked = button
             if redraw:
                 self._color_start = color_start
                 self.fade_timer = self.style.fade_in_time
@@ -218,13 +238,15 @@ class Widget:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
         redraw = self.clicked and self.style.click_color
         color_start = self.get_color()
-        self.clicked = False
+        if self.clicked and self.hovered and self.queue_name:
+            event = MouseEvent({'type':'confirm-click', 'x': x, 'y': y, 'button': self.clicked, 'element': self})
+            pub.sendMessage(self.queue_name, event=event)
+        self.clicked = None
         if redraw:
             self._color_start = color_start
             self._color_end = self.style.hover_color if self.hovered else self.style.default_color
             self.fade_timer = self.style.fade_out_time
             self.animation_ratio = 1.0 if self.fade_timer else 0
-            self.clicked = False
             self.dirty = 1
             self.clear()
             self.set_redraw()
@@ -246,36 +268,50 @@ class Widget:
 
     def parent_draw(self):
         fbo, w_parent, h_parent, x, y = self.get_draw_parent_fbo()
-        self.draw_background(fbo, w_parent, h_parent, x, y)
+        if self.texture:
+            self.gl_draw_rectangle(self.get_color(), self.texture, fbo, w_parent, h_parent,
+                                   off_x=x-self.x, off_y=y-self.y)
+        else:
+            self.draw_background(fbo, w_parent, h_parent, x, y)
 
     def draw_background(self, fbo, w_disp, h_disp, x_disp, y_disp):
         if self.style.border_color and self.style.border_line_w:
-            self.gl_draw_rectangle(self.style.border_color, self.texture, fbo, w_disp, h_disp,
+            self.gl_draw_rectangle(self.style.border_color, 0, fbo, w_disp, h_disp,
                                    off_x=x_disp-self.x, off_y=y_disp-self.y)
             border_w = self.style.border_line_w
-            self.gl_draw_rectangle(self.get_color(), self.texture, fbo,
+            self.gl_draw_rectangle(self.get_color(), 0, fbo,
                                    w_disp, h_disp, border_w+x_disp, border_w+y_disp, -2*border_w, -2*border_w)
         else:
-            self.gl_draw_rectangle(self.get_color(), self.texture, fbo,
+            self.gl_draw_rectangle(self.get_color(), 0, fbo,
                                    w_disp, h_disp, off_x=x_disp-self.x, off_y=y_disp-self.y)
 
-    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0):
+    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0,
+                          tex_x=0, tex_y=0, tex_w=None, tex_h=None):
         glBindTexture(GL_TEXTURE_2D, texture)
         glBindFramebuffer(GL_FRAMEBUFFER, fbo)
         glViewport(0, 0, viewort_w, viewport_h)
         x, y, w, h = (self.x + off_x) / viewort_w, 1 - (self.y + self.h + off_y + off_h) / viewport_h, \
                      (self.w + off_w) / viewort_w, (self.h + off_h) / viewport_h
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
+        tex_x0 = tex_x / (tex_w or self.w)
+        tex_y0 = tex_y / (tex_h or self.h)
+        tex_x1 = (tex_x + self.w) / (tex_w or self.w)
+        tex_y1 = (tex_y + self.h) / (tex_h or self.h)
         glColor4f(*color)
         glBegin(GL_TRIANGLES)
+        glTexCoord2f(tex_x0, tex_y0)
         glVertex2f(x1, y1)
+        glTexCoord2f(tex_x1, tex_y1)
         glVertex2f(x2, y2)
+        glTexCoord2f(tex_x0, tex_y1)
+
         glVertex2f(x1, y2)
-
+        glTexCoord2f(tex_x0, tex_y0)
         glVertex2f(x1, y1)
+        glTexCoord2f(tex_x1, tex_y0)
         glVertex2f(x2, y1)
+        glTexCoord2f(tex_x1, tex_y1)
         glVertex2f(x2, y2)
-
         glEnd()
 
     def add_element(self, element):
@@ -286,11 +322,23 @@ class Widget:
 
     def reset(self):
         self.hovered = False
-        self.clicked = False
+        self.clicked = None
         self.animation_ratio = 0
         self.clear()
         self.set_redraw()
 
+    def load_image(self, image_path, resize=True):
+        self.texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.texture)
+        im = Image.open(image_path)
+        im = im.transpose(Image.FLIP_TOP_BOTTOM)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, im.width, im.height,
+                     0, GL_RGBA if im.mode == 'RGBA' else GL_RGB, GL_UNSIGNED_BYTE, im.tobytes())
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        if resize:
+            self.w = im.width
+            self.h = im.height
 
 class OverflowWidget(Widget):
     def __init__(self, *args, **kwargs):
@@ -337,6 +385,9 @@ class OverflowWidget(Widget):
         super().reset()
         self.offset_x = 0
         self.offset_y = self.overflow_h
+        if self.overflow_h or self.overflow_w:
+            self._scrollbar.y = 0
+
 
 class Options:
     def __init__(self):
@@ -538,7 +589,7 @@ class GuiContainer(OverflowWidget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fbo, self.fbo_tex = self.create_fbo(self.total_w, self.total_h)
+        self.fbo, self.texture = self.create_fbo(self.total_w, self.total_h)
         self.clear()
         self.set_redraw()
 
@@ -572,32 +623,10 @@ class GuiContainer(OverflowWidget):
 
     def parent_draw(self):
         fbo, w_disp, h_disp, x_disp, y_disp = self.get_draw_parent_fbo()
-        glBindTexture(GL_TEXTURE_2D, self.fbo_tex)
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
-        glViewport(0, 0, w_disp, h_disp)
-
-        x, y, w, h = x_disp / w_disp, 1 - (y_disp + self.h) / h_disp, self.w / w_disp, self.h / h_disp
-        x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
-        tex_x0 = self.offset_x / self.total_w
-        tex_y0 = self.offset_y / self.total_h
-        tex_x1 = (self.offset_x + self.w) / self.total_w
-        tex_y1 = (self.offset_y + self.h) / self.total_h
-        glColor4f(1, 1, 1, 1)
-        glBegin(GL_TRIANGLES)
-        glTexCoord2f(tex_x0, tex_y0)
-        glVertex2f(x1, y1)
-        glTexCoord2f(tex_x1, tex_y1)
-        glVertex2f(x2, y2)
-        glTexCoord2f(tex_x0, tex_y1)
-        glVertex2f(x1, y2)
-
-        glTexCoord2f(tex_x0, tex_y0)
-        glVertex2f(x1, y1)
-        glTexCoord2f(tex_x1, tex_y0)
-        glVertex2f(x2, y1)
-        glTexCoord2f(tex_x1, tex_y1)
-        glVertex2f(x2, y2)
-        glEnd()
+        self.gl_draw_rectangle((1, 1, 1, 1), self.texture, fbo, w_disp, h_disp,
+                               off_x=x_disp-self.x, off_y=y_disp-self.y,
+                               tex_w=self.total_w, tex_h=self.total_h,
+                               tex_x=self.offset_x, tex_y=self.offset_y)
 
 
 class TextOverlay(GuiContainer):
@@ -690,14 +719,14 @@ class Button(GuiContainer):
 class DropDown(GuiContainer):
     DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
 
-    def __init__(self, x, y, w, h, top_text, option_list, font, **kwargs):
+    def __init__(self, x, y, w, h, top_text, option_list, font, queue_name=None, **kwargs):
         if 'style' not in kwargs:
             kwargs['style'] = self.DEFAULT_STYLE
         self.button = Button(0, 0, w, h, top_text, font, style=kwargs['style'])
         options_h = 0
         self.options = []
         for text in option_list:
-            option = Button(0, 0, w, h, text, font, style=kwargs['style'])
+            option = Button(0, 0, w, h, text, font, style=kwargs['style'], queue_name=queue_name)
             option.y = options_h
             options_h += option.h
             self.options.append(option)
@@ -746,6 +775,7 @@ class MainWindow(GuiContainer):
         self.direct_rendering = False
 
     def process_events(self):
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
@@ -804,10 +834,21 @@ class OptionsUIApp:
 
         select_style = Style(color=(0, 0.2, 0, 1), hover_color=(0.25, 0.4, 0.25, 1),
                              fade_out_time=0.35, border_color=(0.5, 0.6, 0.5, 1), border_line_w=1)
-        select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(20)],
-                          self.small_font, style=select_style, max_h=300)
+        select = DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(1, 21)],
+                          self.small_font, style=select_style, max_h=300, queue_name='Select_menu')
+
+        image = Widget(600, 600, 1, 1)
+        image.load_image('images/Other Load.png')
+
+
+        def listener(event):
+            print(event.__dict__)
+
+        pub.subscribe(listener, 'callback-click')
+        pub.subscribe(listener, 'Select_menu')
+        self.panel.add_element(image)
         self.panel.add_element(select)
-        self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style))
+        self.panel2.add_element(Button(0, 0, 0, 0, "Click me", self.small_font, style=btn_style, queue_name='callback-click'))
         self.panel3.add_element(TextOverlay(10, 10, LOREM_IPSUM, self.small_font, max_w=self.panel3.w - 20))
         self.run()
 
