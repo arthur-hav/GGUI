@@ -34,10 +34,24 @@ class Widget:
         self._color_start = self.style.default_color
         self._color_end = self.style.default_color
         self.texture = 0
-        self.cleared = False
         self.direct_rendering = True
         self.dirty = 1
         self.uid = str(uuid.uuid4())
+        self.disabled = False
+
+    def disable(self):
+        prev_disabled = self.disabled
+        self.disabled = True
+        if not prev_disabled:
+            self.clear()
+            self.set_redraw()
+
+    def enable(self):
+        prev_disabled = self.disabled
+        self.disabled = False
+        if prev_disabled:
+            self.clear()
+            self.set_redraw()
 
     def find_element(self, uid):
         if self.uid == uid:
@@ -55,7 +69,7 @@ class Widget:
         return rect_1.colliderect(rect_2)
 
     def clear(self):
-        self.cleared = True
+        pass
 
     def set_redraw(self, overlap_elem=None):
         if not overlap_elem:
@@ -73,9 +87,11 @@ class Widget:
             if element.draw_parent == self:
                 element.dirty = max(element.dirty, 1)
         self.dirty = max(self.dirty, 1)
-        if self.draw_parent and (self.style.transparent or self.draw_parent.style.transparent):
+        if self.draw_parent and self.style.transparent:
             self.draw_parent.clear()
             self.draw_parent.set_redraw()
+        elif self.draw_parent:
+            self.draw_parent.dirty = 1
 
     @property
     def draw_parent(self):
@@ -107,12 +123,18 @@ class Widget:
         for element in self.elements:
             element.update(frame_time)
         if self.dirty and self.draw_parent:
-            self.draw_parent.dirty = self.dirty
+            if self.style.transparent or self.draw_parent.style.transparent:
+                self.draw_parent.clear()
+                self.draw_parent.set_redraw()
+            else:
+                self.draw_parent.dirty = self.dirty
 
     def get_color(self):
         if self.animation_ratio:
             return tuple(self._color_start[i] * self.animation_ratio + \
                          self._color_end[i] * (1 - self.animation_ratio) for i in range(4))
+        if self.disabled and self.style.disabled_color:
+            return self.style.disabled_color
         if self.clicked and self.style.click_color:
             return self.style.click_color
         if self.hovered and self.style.hover_color:
@@ -129,14 +151,16 @@ class Widget:
         return self.x < x < self.x + self.w and self.y < y < self.y + self.h
 
     def check_mouse(self, x, y):
+        if self.disabled:
+            return
+        for element in self.elements:
+            element_x, element_y = self.to_element_x(x), self.to_element_y(y)
+            element.check_mouse(element_x, element_y)
         if self.hover_pred(x, y):
             if not self.hovered:
                 self.mouse_enter()
         elif self.hovered:
             self.mouse_leave()
-        for element in self.elements:
-            element_x, element_y = self.to_element_x(x), self.to_element_y(y)
-            element.check_mouse(element_x, element_y)
 
     def bind(self, parent):
         self.parent = parent
@@ -176,25 +200,32 @@ class Widget:
         pass
 
     def mouse_down(self, x, y, button):
-        if self.hovered:
-            if not self.clicked and self.hovered:
-                event = Event({'x': x, 'y': y, 'button': button})
-                pub.sendMessage(f'{self.uid}.click', event=event)
-            for element in self.elements:
-                element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
-            redraw = not self.clicked and self.style.click_color
-            color_start = self.get_color()
-            self.clicked = button
-            if redraw:
-                self._color_start = color_start
-                self.fade_timer = self.style.fade_in_time
-                self.animation_ratio = 1.0 if self.fade_timer else 0
-                self._color_end = self.style.click_color
-                self.dirty = 1
-                self.clear()
-                self.set_redraw()
+        if self.disabled:
+            return
+        if not self.hovered:
+            return
+        if button != 1:
+            return
+        if not self.clicked:
+            event = Event({'x': x, 'y': y, 'button': button})
+            pub.sendMessage(f'{self.uid}.click', event=event)
+        for element in self.elements:
+            element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
+        redraw = not self.clicked and self.style.click_color
+        color_start = self.get_color()
+        self.clicked = button
+        if redraw:
+            self._color_start = color_start
+            self.fade_timer = self.style.fade_in_time
+            self.animation_ratio = 1.0 if self.fade_timer else 0
+            self._color_end = self.style.click_color
+            self.dirty = 1
+            self.clear()
+            self.set_redraw()
 
     def mouse_up(self, x, y):
+        if self.disabled:
+            return
         for element in self.elements:
             element.mouse_up(self.to_element_x(x), self.to_element_y(y))
         redraw = self.clicked and self.style.click_color
@@ -224,11 +255,9 @@ class Widget:
         if not self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         self.dirty = max(self.dirty - 1, 0)
-        self.cleared = False
 
     def parent_draw(self):
         fbo, w_parent, h_parent, x, y = self.get_draw_parent_fbo()
-        print(self)
         if self.texture:
             self.gl_draw_rectangle(self.get_color(), self.texture, fbo, w_parent, h_parent,
                                    off_x=x-self.x, off_y=y-self.y)

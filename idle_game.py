@@ -1,7 +1,7 @@
 import pygame
-import time
 from pubsub import pub
 import ggui
+from collections import OrderedDict
 
 FRAMERATE = 60
 SMALL_FONT = None
@@ -26,49 +26,156 @@ class MainMenu(ggui.GuiContainer):
         self.unbind()
 
 
+class Game:
+    building_costs = {
+        'power_plant': {'metal': 20}
+    }
+
+    def __init__(self):
+        self.resources = OrderedDict({
+            'metal': 10,
+            'energy': 10,
+            'wood': 10
+        })
+        self.buildings = OrderedDict({
+            'power_plant': 0
+        })
+        self.current_action = None
+        self.action_time_max = 0
+        self.action_time = 0
+
+    def update(self, frame_time):
+        consumption = min(self.resources['wood'], self.buildings['power_plant'] * frame_time / 5000)
+        self.resources['energy'] += consumption * 5
+        self.resources['wood'] -= consumption
+        if self.current_action:
+            self.action_time += frame_time / 1000
+            if self.action_time > self.action_time_max:
+                self.current_action()
+                self.current_action = None
+                self.action_time_max = 0
+                self.action_time = 0
+
+    def check_resources(self, building):
+        for resource, cost in self.building_costs[building].items():
+            if self.resources[resource] < cost:
+                return False
+        return True
+
+    def consume_resources(self, building):
+        for resource, cost in self.building_costs[building].items():
+            self.resources[resource] -= cost
+
+
+class ActionTab(ggui.GuiContainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.btn_style = ggui.Style(color=(0.075, 0.075, 0.075, 0.5),
+                                    hover_color=(0.12, 0.12, 0.12, 0.5),
+                                    click_color=(0.37, 0.0, 0.0, 0.5),
+                                    border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5))
+        gatherable_resources = ['wood', 'metal']
+
+        self.gather_select = ggui.DropDown(20, 20, 210, 40, 'Gather...', gatherable_resources, SMALL_FONT,
+                                           style=self.btn_style)
+
+        self.build_select = ggui.DropDown(20, 80, 210, 40, 'Build...', ['Steam power plant'], SMALL_FONT,
+                                          style=self.btn_style)
+        for element in [self.gather_select, self.build_select]:
+            self.add_element(element)
+        pub.subscribe(self.gather_focus, f'{self.gather_select.uid}.focus')
+        pub.subscribe(self.gather_unfocus, f'{self.gather_select.uid}.unfocus')
+
+    def gather_focus(self, event):
+        self.elements.remove(self.build_select)
+
+    def gather_unfocus(self, event):
+        self.add_element(self.build_select)
+
+
+class ResourceTab(ggui.GuiContainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.texts = []
+
+    def bind(self, parent):
+        super().bind(parent)
+        for i, resources in enumerate(self.parent.game.resources.keys()):
+            self.texts.append(ggui.TextOverlay(20, 20 + 50 * i, resources, SMALL_FONT, w=200))
+        for element in self.texts:
+            self.add_element(element)
+
+    def update(self, frame_time):
+        for i, (resource, amount) in enumerate(self.parent.game.resources.items()):
+            self.texts[i].render_string.string = f"{amount:.1f} {resource.capitalize()}"
+        super().update(frame_time)
+
+
 class PlayScene(ggui.GuiContainer):
     def __init__(self):
         super().__init__(10, 10, 1900, 1060, style=ggui.Style(color=(0.05, 0.05, 0.05, 1)))
-        self.btn_style = ggui.Style(color=(0.075, 0.075, 0.075, 0.5),
-                                           hover_color=(0.12, 0.12, 0.12, 0.5),
-                                           click_color=(0.37, 0.37, 0.37, 0.5),
-                                    border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5))
 
         self.panel_style = ggui.Style(color=(0.1, 0.1, 0.1, 0.10))
         self.subpanel_style = ggui.Style(parent_styles=[self.panel_style],
                                          border_color=(0.5, 0.5, 0.5, 0.5),
                                          border_line_w=2)
-        self.metal_text = ggui.TextOverlay(20, 20, '100 Metal', MEDIUM_FONT, w=200)
-        self.energy_text = ggui.TextOverlay(20, 80, '100 Energy', MEDIUM_FONT, w=200)
-        self.wood_text = ggui.TextOverlay(20, 140, '100 Wood', MEDIUM_FONT, w=200)
+        self.game = Game()
 
-        self.actions = ggui.GuiContainer(1650, 10, 250, 800, style=self.panel_style)
-        self.ressources = ggui.GuiContainer(10, 10, 250, 800, style=self.panel_style)
+        self.actions = ActionTab(1650, 10, 250, 800, style=self.panel_style)
+        self.resources = ResourceTab(10, 10, 250, 800, style=self.panel_style)
+        self.progress_bar = ggui.ProgressBar(10, 80, 210, 15, style=ggui.Style(color=(0, 0, 0, 0.2), border_line_w=2,
+                                                                               border_color=(0.5, 0.5, 0.5, 0.2)))
 
-        self.gather_wood = ggui.Button(20, 20, 140, 40, 'Gather wood', SMALL_FONT, style=self.btn_style)
-        self.gather_metal = ggui.Button(20, 80, 140, 40, 'Gather metal', SMALL_FONT, style=self.btn_style)
-
-        self.build_menu = ggui.GuiContainer(10, 200, 230, 200, overflow_h=200, style=self.subpanel_style)
-
-        self.power_plant = ggui.Button(10, 20, 180, 40, 'Steam power plant', SMALL_FONT, style=self.btn_style)
-
-        self.progress_bar = ggui.ProgressBar(10, 80, 180, 20, style=ggui.Style(color=(0, 0, 0, 0.2), border_line_w=2,
-                                                                               border_color=(1, 1, 1, 0.2)))
-        for element in [self.metal_text, self.energy_text, self.wood_text]:
-            self.ressources.add_element(element)
-        for element in [self.gather_wood, self.gather_metal, self.build_menu]:
-            self.actions.add_element(element)
-        for element in [self.power_plant, self.progress_bar]:
-            self.build_menu.add_element(element)
         self.add_element(self.actions)
-        self.add_element(self.ressources)
-        self.timer = 0
+        self.add_element(self.resources)
+        pub.subscribe(self.build_callback, f'{self.actions.build_select.uid}.select')
+        pub.subscribe(self.gather_callback, f'{self.actions.gather_select.uid}.select')
 
     def update(self, frame_time):
-        self.timer += frame_time / 1000
-        if self.timer > 10:
-            self.timer = 0
-        self.progress_bar.set_progress(self.timer/10)
+        self.game.update(frame_time)
+        if self.game.current_action:
+            self.progress_bar.set_progress(self.game.action_time / self.game.action_time_max)
+        super().update(frame_time)
+
+    def build_callback(self, event):
+        if event.index == 0:
+            if not self.game.check_resources('power_plant'):
+                return
+            self.game.current_action = lambda: self.build_done('power_plant')
+            self.game.consume_resources('power_plant')
+            self.game.action_time_max = 5
+        self.actions.elements.remove(self.actions.build_select)
+        self.actions.add_element(self.progress_bar)
+        self.progress_bar.x, self.progress_bar.y = self.actions.build_select.x, self.actions.build_select.y
+        self.disable()
+
+    def build_done(self, building):
+        self.game.buildings[building] += 1
+        self.actions.add_element(self.actions.build_select)
+        self.actions.elements.remove(self.progress_bar)
+        self.actions.clear()
+        self.actions.set_redraw()
+        self.enable()
+
+    def gather_callback(self, event):
+        if event.index == 0:
+            self.game.current_action = lambda: self.gather_done('wood')
+        if event.index == 1:
+            self.game.current_action = lambda: self.gather_done('metal')
+        self.game.action_time_max = 5
+        self.actions.elements.remove(self.actions.gather_select)
+        self.actions.add_element(self.progress_bar)
+        self.progress_bar.x, self.progress_bar.y = self.actions.gather_select.x, self.actions.gather_select.y
+        self.disable()
+
+    def gather_done(self, resource):
+        self.game.resources[resource] += 10
+        self.actions.add_element(self.actions.gather_select)
+        self.actions.elements.remove(self.progress_bar)
+        self.actions.clear()
+        self.actions.set_redraw()
+        self.enable()
+
 
 class IdleGame:
     def __init__(self):
@@ -96,6 +203,7 @@ class IdleGame:
             self.window_ui.update(update_time)
             self.window_ui.draw(True)
             pygame.display.flip()
+
 
 if __name__ == '__main__':
     app = IdleGame()

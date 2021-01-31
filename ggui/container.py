@@ -79,8 +79,6 @@ class GuiContainer(OverflowWidget):
         return GL_RGBA
 
     def clear(self, cascade=True):
-        if self.cleared:
-            return
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo)
         glClearColor(*self.get_color())
         glClear(GL_COLOR_BUFFER_BIT)

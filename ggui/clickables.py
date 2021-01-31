@@ -41,9 +41,10 @@ class DropDown(GuiContainer):
 
     def mouse_down(self, x, y, button):
         super(DropDown, self).mouse_down(x, y, button)
-        if button != 1 or self.drop_down._scrollbar.clicked:
+        if button != 1 or self.drop_down.overflow_h and self.drop_down._scrollbar.clicked:
             return
         if self.hovered and not self.focus:
+            pub.sendMessage(f'{self.uid}.focus', event=Event({}))
             self.focus = True
             self.add_element(self.drop_down)
             self.clear()
@@ -53,13 +54,15 @@ class DropDown(GuiContainer):
                 if element.clicked:
                     pub.sendMessage(f'{self.uid}.select', event=Event({'index': i}))
             self.elements.remove(self.drop_down)
-            self.drop_down.unbind()
+            pub.sendMessage(f'{self.uid}.unfocus', event=Event({}))
             self.focus = False
             self.clear()
             self.set_redraw()
             for option in self.options:
                 option.reset()
             self.drop_down.reset()
+            self.drop_down.unbind()
+
 
     def hover_pred(self, x, y):
         if not self.focus:

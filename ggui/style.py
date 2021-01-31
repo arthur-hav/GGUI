@@ -5,6 +5,7 @@ class Style:
                  color=(0, 0, 0, 0),
                  hover_color=None,
                  click_color=None,
+                 disabled_color=None,
                  border_color=None,
                  border_line_w=0,
                  fade_in_time=0.0,
@@ -18,6 +19,7 @@ class Style:
         self.default_color = self.premultiply(color)
         self.hover_color = self.premultiply(hover_color)
         self.click_color = self.premultiply(click_color)
+        self.disabled_color = self.premultiply(disabled_color)
         self.transparent = transparent if transparent is not None else self.default_color[3] < 1.0
         self.fade_in_time = fade_in_time
         self.fade_out_time = fade_out_time
