@@ -57,8 +57,6 @@ class ExampleApp:
         image = ggui.Widget(600, 600, 1, 1)
         image.load_image('images/Other Load.png')
 
-
-
         pub.subscribe(listener, f'{select.uid}.select')
         self.panel.add_element(image)
         self.panel.add_element(select)

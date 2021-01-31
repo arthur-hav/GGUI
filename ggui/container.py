@@ -12,7 +12,7 @@ class OverflowWidget(Widget):
         self.overflow_h = kwargs.get('overflow_h', 0)
         self.offset_x = 0
         self.offset_y = kwargs.get('overflow_h', 0)
-        if self.overflow_h or self.overflow_w and not self.parent:
+        if self.overflow_h or self.overflow_w:
             self._scrollbar = ScrollBar(window=self)
             self.add_element(self._scrollbar)
         self.direct_rendering = self.direct_rendering and not self.overflow_h and not self.overflow_w

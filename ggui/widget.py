@@ -73,7 +73,7 @@ class Widget:
             if element.draw_parent == self:
                 element.dirty = max(element.dirty, 1)
         self.dirty = max(self.dirty, 1)
-        if self.style.transparent and self.draw_parent:
+        if self.draw_parent and (self.style.transparent or self.draw_parent.style.transparent):
             self.draw_parent.clear()
             self.draw_parent.set_redraw()
 
@@ -219,7 +219,6 @@ class Widget:
     def draw(self, force=False):
         if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
-
         for element in sorted(self.elements, key=lambda w: w.z):
             element.draw()
         if not self.direct_rendering and (self.dirty or force):
@@ -229,6 +228,7 @@ class Widget:
 
     def parent_draw(self):
         fbo, w_parent, h_parent, x, y = self.get_draw_parent_fbo()
+        print(self)
         if self.texture:
             self.gl_draw_rectangle(self.get_color(), self.texture, fbo, w_parent, h_parent,
                                    off_x=x-self.x, off_y=y-self.y)
@@ -237,22 +237,45 @@ class Widget:
 
     def draw_background(self, fbo, w_disp, h_disp, x_disp, y_disp):
         if self.style.border_color and self.style.border_line_w:
-            self.gl_draw_rectangle(self.style.border_color, 0, fbo, w_disp, h_disp,
-                                   off_x=x_disp-self.x, off_y=y_disp-self.y)
-            border_w = self.style.border_line_w
-            self.gl_draw_rectangle(self.get_color(), 0, fbo,
-                                   w_disp, h_disp, border_w+x_disp, border_w+y_disp, -2*border_w, -2*border_w)
-        else:
-            self.gl_draw_rectangle(self.get_color(), 0, fbo,
-                                   w_disp, h_disp, off_x=x_disp-self.x, off_y=y_disp-self.y)
+            self.gl_draw_border(self.style.border_color, 0, fbo, w_disp, h_disp, self.style.border_line_w)
+        border_w = self.style.border_line_w
+        self.gl_draw_rectangle(self.get_color(), 0, fbo,
+                               w_disp, h_disp, border_w+x_disp-self.x,
+                               border_w+y_disp-self.y, -2*border_w, -2*border_w)
 
-    def gl_draw_rectangle(self, color, texture, fbo, viewort_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0,
+    def gl_draw_border(self, color, texture, fbo, viewport_w, viewport_h, line_width):
+        glBindTexture(GL_TEXTURE_2D, texture)
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+        glViewport(0, 0, viewport_w, viewport_h)
+        glLineWidth(line_width)
+        x, y, w, h = self.x / viewport_w, 1 - (self.y + self.h) / viewport_h, \
+                     self.w / viewport_w, self.h / viewport_h
+
+        vert_x1, vert_x2, = x + line_width / viewport_w / 2, x + w - line_width / viewport_w / 2
+        v_x1, v_y1, v_x2, v_y2 = -1 + 2 * vert_x1, -1 + 2 * y, -1 + 2 * vert_x2, -1 + (2 * y + 2 * h)
+        hori_x, hori_w, = x + line_width / viewport_w, w - line_width / viewport_w * 2
+        hori_y1, hori_y2 = y + line_width / viewport_h / 2, y + h - line_width / viewport_h / 2
+        h_x1, h_y1, h_x2, h_y2 = -1 + 2 * hori_x, -1 + 2 * hori_y1, -1 + 2 * (hori_x + hori_w), -1 + 2 * hori_y2
+        glColor4f(*color)
+        glBegin(GL_LINES)
+        glVertex2f(v_x1, v_y2)
+        glVertex2f(v_x1, v_y1)
+        glVertex2f(v_x2, v_y2)
+        glVertex2f(v_x2, v_y1)
+
+        glVertex2f(h_x1, h_y1)
+        glVertex2f(h_x2, h_y1)
+        glVertex2f(h_x1, h_y2)
+        glVertex2f(h_x2, h_y2)
+        glEnd()
+
+    def gl_draw_rectangle(self, color, texture, fbo, viewport_w, viewport_h, off_x=0, off_y=0, off_w=0, off_h=0,
                           tex_x=0, tex_y=0, tex_w=None, tex_h=None):
         glBindTexture(GL_TEXTURE_2D, texture)
         glBindFramebuffer(GL_FRAMEBUFFER, fbo)
-        glViewport(0, 0, viewort_w, viewport_h)
-        x, y, w, h = (self.x + off_x) / viewort_w, 1 - (self.y + self.h + off_y + off_h) / viewport_h, \
-                     (self.w + off_w) / viewort_w, (self.h + off_h) / viewport_h
+        glViewport(0, 0, viewport_w, viewport_h)
+        x, y, w, h = (self.x + off_x) / viewport_w, 1 - (self.y + self.h + off_y + off_h) / viewport_h, \
+                     (self.w + off_w) / viewport_w, (self.h + off_h) / viewport_h
         x1, y1, x2, y2 = -1 + 2 * x, -1 + 2 * y, -1 + 2 * x + 2 * w, -1 + (2 * y + 2 * h)
         tex_x0 = tex_x / (tex_w or self.w)
         tex_y0 = tex_y / (tex_h or self.h)

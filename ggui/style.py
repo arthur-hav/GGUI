@@ -1,6 +1,8 @@
 
 class Style:
-    def __init__(self, color=(0, 0, 0, 0),
+    def __init__(self,
+                 parent_styles=None,
+                 color=(0, 0, 0, 0),
                  hover_color=None,
                  click_color=None,
                  border_color=None,
@@ -8,6 +10,11 @@ class Style:
                  fade_in_time=0.0,
                  fade_out_time=0.0,
                  transparent=None):
+        if parent_styles:
+            for parent_style in reversed(parent_styles):
+                attrs = parent_style.__dict__
+                for k, v in attrs.items():
+                    setattr(self, k, v)
         self.default_color = self.premultiply(color)
         self.hover_color = self.premultiply(hover_color)
         self.click_color = self.premultiply(click_color)

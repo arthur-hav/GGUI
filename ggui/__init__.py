@@ -4,6 +4,7 @@ from .style import *
 from .text import *
 from .container import *
 from .clickables import *
+from .progress_bar import *
 
 
 def init_gl(width, height):
