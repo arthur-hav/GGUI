@@ -188,13 +188,13 @@ class Widget:
             return
         if not self.hovered:
             return
+        for element in self.elements:
+            element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
         if button != 1:
             return
         if not self.clicked:
             event = Event({'x': x, 'y': y, 'button': button})
             pub.sendMessage(f'{self.uid}.click', event=event)
-        for element in self.elements:
-            element.mouse_down(self.to_element_x(x), self.to_element_y(y), button)
         redraw = not self.clicked and self.style.click_color
         color_start = self.get_color()
         self.clicked = button

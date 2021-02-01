@@ -204,9 +204,9 @@ class RenderString(Widget):
 class TextOverlay(GuiContainer):
     DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
 
-    def __init__(self, x, y, text, font, w=0, h=0, **kwargs):
-        self.render_string = RenderString(0, font.min_top, text, font, **kwargs)
-        super().__init__(x, y, w or self.render_string.w, h or self.render_string.h)
+    def __init__(self, x, y, text, font, w=0, h=0, text_style=None, style=None, **kwargs):
+        self.render_string = RenderString(0, font.min_top, text, font, style=text_style, **kwargs)
+        super().__init__(x, y, w or self.render_string.w, h or self.render_string.h, style=style)
         self.add_element(self.render_string)
 
 

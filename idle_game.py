@@ -7,14 +7,14 @@ import random
 FRAMERATE = 60
 SMALL_FONT = None
 MEDIUM_FONT = None
-TITLE_FONT = None
+LARGE_FONT = None
 
 
 class MainMenu(ggui.GuiContainer):
 
     def __init__(self):
         super().__init__(10, 10, 1900, 1060, style=ggui.Style(color=(0.05, 0.05, 0.05, 1)))
-        btn = ggui.Button(900, 480, 120, 60, 'Play', MEDIUM_FONT, padding_y=10, padding_x=30,
+        btn = ggui.Button(900, 480, 120, 60, 'Play', LARGE_FONT, padding_y=10, padding_x=30,
                           style=ggui.Style(color=(0.25, 0.05, 0.05, 1),
                                            hover_color=(0.75, 0.5, 0.5, 1),
                                            click_color=(1, 1, 1, 1)))
@@ -43,6 +43,7 @@ class Game:
         self.current_action = None
         self.action_time_max = 0
         self.action_time = 0
+        self.map = {}
 
     def update(self, frame_time):
         consumption = min(self.resources['wood'], self.buildings['power_plant'] * frame_time / 5000)
@@ -70,18 +71,19 @@ class Game:
 class HexTile(ggui.Widget):
     master_texture = None
 
-    def __init__(self, x, y):
+    def __init__(self, x, y, revealed=False, resource=None):
         if not self.master_texture:
             HexTile.master_texture = self.load_image('images/Hex.png')
         self.hidden_style = ggui.Style(color=(0, 0, 0, 1))
         self.revealed_style = ggui.Style(color=(0.25, 0.25, 0.25, 1), hover_color=(0.5, 0.5, 0.5, 1), fade_out_time=0.2)
-        self.revealed = False
-        super().__init__(x, y, 56, 60, texture=self.master_texture, style=self.hidden_style)
-        self.disable()
-        if random.random() < 0.06:
-            self.add_element(Resource(12, 13, 'wood'))
-        elif random.random() < 0.02:
-            self.add_element(Resource(12, 13, 'iron'))
+        self.revealed = revealed or resource
+
+        super().__init__(x, y, 56, 60, texture=self.master_texture,
+                         style=self.hidden_style if not self.revealed else self.revealed_style)
+        if resource:
+            self.add_element(Resource(12, 13, resource))
+        if not revealed:
+            self.disable()
 
     def hover_pred(self, x, y):
         t1 = - (y - self.y) + 0.5 * (x - self.x) + self.w * 3 / 4
@@ -90,14 +92,19 @@ class HexTile(ggui.Widget):
         return 0 < t1 < self.h and 0 < t2 < self.h and 0 < t3 < self.w
 
     def reveal(self):
+        if self.revealed:
+            return None
         self.style = self.revealed_style
+        element = 'empty'
+        if random.random() < 0.06:
+            element = 'wood'
+        elif random.random() < 0.02:
+            element = 'iron'
+        if element != 'empty':
+            self.add_element(Resource(12, 13, element))
         self.revealed = True
         self.enable()
-        for element in self.elements:
-            try:
-                element.reveal()
-            except AttributeError:
-                pass
+        return element
 
 
 class Resource(ggui.Widget):
@@ -108,69 +115,134 @@ class Resource(ggui.Widget):
         self.name = name
         if self.name not in self.master_textures:
             self.master_textures[self.name] = self.load_image(f'images/{self.name.capitalize()}.png')
-        self.hidden_style = ggui.Style(color=(0, 0, 0, 1))
-        self.revealed_style = ggui.Style(color=(1, 1, 1, 1))
-        self.revealed = False
-        super().__init__(x, y, 32, 32, texture=self.master_textures[self.name], style=self.hidden_style)
-
-    def reveal(self):
-        self.style = self.revealed_style
-        self.revealed = True
+        super().__init__(x, y, 32, 32, texture=self.master_textures[self.name])
 
 
 class Grid(ggui.GuiContainer):
+    STEPS = [(56, 0), (-56, 0), (28, 46), (-28, 46), (28, -46), (-28, -46), (0, 0)]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        for j in range(-46, self.h, 46):
-            for i in range(-56, self.w, 56):
-                if j % 4 == 0:
-                    i += 28
-                hex = HexTile(i, j)
-                self.add_element(hex)
-
-        center_cell = self.elements[len(self.elements)//2]
-        self.player_cell = center_cell
-        self.player = ggui.Widget(center_cell.w / 2 - 10, center_cell.h / 2 - 10, 20, 20)
+        self.hexes = []
+        self.player = ggui.Widget(56 / 2 - 10, 60 / 2 - 10, 20, 20)
         self.player.texture = self.player.load_image('images/Player.png')
-        self.player_cell.add_element(self.player)
         self._moving_from = None
         self._moving_to = None
-        self.scout()
+        self.player_coords = (0, 0)
+        self.center_cell_coords = (840, 460)
+        self.origin_shift = (0, 0)
+        self.drag_start = None
+
+        cell = self.get_widget_at_logical_xy(0, 0)
+        cell.add_element(self.player)
 
     def dist(self, cell1, cell2):
         return ((cell1.x - cell2.x) ** 2 + (cell1.y - cell2.y) ** 2) ** 0.5 / cell1.w
+
+    def to_logical_coords(self, cell=None, x=None, y=None):
+        if cell:
+            x, y = cell.x, cell.y
+        return (x - self.center_cell_coords[0] + self.origin_shift[0]), \
+               (y - self.center_cell_coords[1] + self.origin_shift[1])
 
     def get_clicked_element(self):
         for element in self.elements:
             if element.clicked:
                 return element
 
+    def populate_from_game_dict(self, game_dict):
+        for hex in self.hexes:
+            if hex in self.elements:
+                self.elements.remove(hex)
+        self.hexes = []
+        nb_steps_h = self.h // 46
+        offset_h = self.origin_shift[1] % 46
+        nb_step_w = self.w // 56
+        offset_w = self.origin_shift[0] % 56
+        if self.origin_shift[1] % 92 < 46:
+            offset_w += 28
+        for hex_count, j in enumerate(range(- offset_h, 46 * nb_steps_h, 46)):
+            for i in range(- offset_w, 56 * nb_step_w, 56):
+                if hex_count % 2 == 0:
+                    i += 28
+                x, y = self.to_logical_coords(x=i, y=j)
+                map_get = game_dict.get((x, y))
+                if map_get:
+                    resource = map_get if map_get != 'empty' else None
+                    hex = HexTile(i, j, revealed=True, resource=resource)
+                    self.hexes.append(hex)
+                    self.add_element(hex)
+                    if (x, y) == self.player_coords:
+                        hex.add_element(self.player)
+
+        self.clear()
+        self.set_redraw()
+
     def mouse_down(self, x, y, button):
         super().mouse_down(x, y, button)
-        cell = self.get_clicked_element()
-        if not cell or cell == self.player_cell:
-            return
-        self.parent.game.current_action = lambda: self.move(cell)
-        self.player_cell.elements.remove(self.player)
-        self.player_cell.set_redraw()
-        self._moving_from = (self.player_cell.x + self.player.x, self.player_cell.y + self.player.y)
-        self._moving_to = (cell.x + self.player.x, cell.y + self.player.y)
-        self.parent.game.action_time_max = self.dist(cell, self.player_cell)
-        self.add_element(self.player)
+        if button == 1 and not self._moving_to:
+            cell = self.get_clicked_element()
+            if not cell or self.to_logical_coords(cell) == self.player_coords:
+                return
+            player_cell = self.get_widget_at_logical_xy(self.player_coords[0], self.player_coords[1])
+            self.parent.game.current_action = lambda: self.move(cell)
+            player_cell.elements.remove(self.player)
+            player_cell.set_redraw()
+            self._moving_from = (player_cell.x + self.player.x, player_cell.y + self.player.y)
+            self._moving_to = (cell.x + self.player.x, cell.y + self.player.y)
+            self.parent.game.action_time_max = self.dist(cell, player_cell)
+            self.add_element(self.player)
+        elif not self._moving_to:
+            for element in self.elements:
+                if element.hovered:
+                    cell = element
+                    break
+            else:
+                return
+            self.drag_start = (x, y)
+
+    def mouse_up(self, x, y):
+        super().mouse_up(x, y)
+        self.drag_start = None
+
+    def check_mouse(self, x, y):
+        super().check_mouse(x, y)
+        if self.drag_start:
+            self.origin_shift = self.origin_shift[0] - x + self.drag_start[0], \
+                                self.origin_shift[1] - y + self.drag_start[1]
+            self.drag_start = (x, y)
+            self.populate_from_game_dict(self.parent.game.map)
+
+    def get_widget_at_logical_xy(self, x, y):
+        for element in self.elements:
+            if self.to_logical_coords(element) == (x, y):
+                return element
+        hex = HexTile(x + self.center_cell_coords[0] - self.origin_shift[0], y + self.center_cell_coords[1] - self.origin_shift[1])
+        self.hexes.append(hex)
+        self.add_element(hex)
+        return hex
 
     def scout(self):
-        for cell in self.elements:
-            if self.dist(self.player_cell, cell) < 1.5:
-                cell.reveal()
+        for step in self.STEPS:
+            x, y = self.player_coords[0] + step[0], self.player_coords[1] + step[1]
+            cell = self.get_widget_at_logical_xy(x, y)
+            if cell:
+                retval = cell.reveal()
+                if retval:
+                    self.parent.game.map[x, y] = retval
+
+    def bind(self, parent):
+        super().bind(parent)
+        self.scout()
 
     def move(self, cell):
         self.elements.remove(self.player)
-        self.player_cell = cell
+        self.player_coords = self.to_logical_coords(cell)
         cell.add_element(self.player)
         self.player.x = cell.w / 2 - 10
         self.player.y = cell.h / 2 - 10
-        self.player_cell.clear()
-        self.player_cell.set_redraw()
+        cell.clear()
+        cell.set_redraw()
         self.scout()
         self._moving_to = None
         self._moving_from = None
@@ -193,9 +265,9 @@ class ActionTab(ggui.GuiContainer):
                                     click_color=(0.37, 0.0, 0.0, 0.5),
                                     border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5))
 
-        self.gather_btn = ggui.Button(20, 20, 210, 40, 'Gather Resource', SMALL_FONT, style=self.btn_style)
+        self.gather_btn = ggui.Button(20, 20, 210, 40, 'Gather Resource', MEDIUM_FONT, style=self.btn_style)
 
-        self.build_select = ggui.DropDown(20, 80, 210, 40, 'Build...', ['Steam power plant'], SMALL_FONT,
+        self.build_select = ggui.DropDown(20, 80, 210, 40, 'Build...', ['Steam power plant'], MEDIUM_FONT,
                                           style=self.btn_style)
         for element in [self.gather_btn, self.build_select]:
             self.add_element(element)
@@ -210,9 +282,8 @@ class ResourceTab(ggui.GuiContainer):
     def bind(self, parent):
         super().bind(parent)
         for resource, value in self.parent.game.resources.items():
-            self.texts[resource] = ggui.TextOverlay(60, 20, resource, SMALL_FONT, w=200)
+            self.texts[resource] = ggui.TextOverlay(25, 40, resource, SMALL_FONT, w=27, style=ggui.Style(color=(0, 0, 0, 0.5)))
             self.icons[resource] = Resource(20, 20, resource)
-            self.icons[resource].reveal()
 
     def update(self, frame_time):
         i = 0
@@ -225,12 +296,12 @@ class ResourceTab(ggui.GuiContainer):
                     self.icons[resource].unbind()
                 continue
             self.texts[resource].render_string.string = f"{amount:.0f}"
-            self.texts[resource].y = 20 + 50 * i
+            self.texts[resource].y = 40 + 50 * i
             self.icons[resource].y = 20 + 50 * i
             i += 1
             if self.texts[resource] not in self.elements:
-                self.add_element(self.texts[resource])
                 self.add_element(self.icons[resource])
+                self.add_element(self.texts[resource])
         super().update(frame_time)
 
 
@@ -289,11 +360,12 @@ class PlayScene(ggui.GuiContainer):
         self.actions.disable()
 
     def gather_done(self):
-        for element in self.grid.player_cell.elements:
-            try:
-                self.game.resources[element.name] += 10
-            except (AttributeError, KeyError):
-                pass
+        player_pos = self.grid.player_coords
+        resource = self.game.map.get(player_pos)
+        if not resource or resource == 'empty':
+            print('WARNING empty resource gather')
+            return
+        self.game.resources[resource] += 10
         self.actions.add_element(self.actions.gather_btn)
         self.actions.elements.remove(self.progress_bar)
         self.actions.enable()
@@ -309,11 +381,11 @@ class IdleGame:
 
         ggui.init_gl(1920, 1080)
         global SMALL_FONT
-        SMALL_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 14)
+        SMALL_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 10)
         global MEDIUM_FONT
-        MEDIUM_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 23)
-        global TITLE_FONT
-        TITLE_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 40)
+        MEDIUM_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 14)
+        global LARGE_FONT
+        LARGE_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 23)
         self.window_ui = ggui.MainWindow(0, 0, 1920, 1080)
         self.main_menu = MainMenu()
         self.window_ui.add_element(self.main_menu)
