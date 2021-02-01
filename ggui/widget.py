@@ -35,7 +35,7 @@ class Widget:
         self._color_end = self.style.default_color
         self.texture = texture
         self.cleared = False
-        self.direct_rendering = False
+        self.direct_rendering = True
         self.dirty = 1
         self.uid = str(uuid.uuid4())
         self.disabled = False
@@ -43,18 +43,16 @@ class Widget:
     def disable(self):
         prev_disabled = self.disabled
         self.hovered = False
-        self.clicked = False
+        self.clicked = None
         self.disabled = True
         if not prev_disabled:
-            self.clear()
-            self.set_redraw()
+            self.reset()
 
     def enable(self):
         prev_disabled = self.disabled
         self.disabled = False
         if prev_disabled:
-            self.clear()
-            self.set_redraw()
+            self.reset()
 
     def find_element(self, uid):
         if self.uid == uid:
@@ -83,6 +81,8 @@ class Widget:
 
     @property
     def draw_parent(self):
+        if self.parent and self.parent.direct_rendering:
+            return self.parent.draw_parent
         return self.parent
 
     def __repr__(self):
@@ -94,6 +94,9 @@ class Widget:
         return pres
 
     def get_draw_parent_fbo(self):
+        if self.parent and self.parent.direct_rendering:
+            fbo, w, h, x_parent, y_parent = self.parent.get_draw_parent_fbo()
+            return fbo, w, h, x_parent + self.x, y_parent + self.y
         if self.parent:
             return self.parent.fbo, self.parent.total_w, self.parent.total_h, self.x, self.y
         return 0, self.w, self.h, self.x, self.y
@@ -231,7 +234,7 @@ class Widget:
         if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         for element in sorted(self.elements, key=lambda w: w.z):
-            element.draw(self.cleared)
+            element.draw(self.cleared or force and self.direct_rendering)
         if not self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         self.dirty = max(self.dirty - 1, 0)
@@ -310,8 +313,6 @@ class Widget:
 
     def add_element(self, element):
         self.elements.append(element)
-        if element.style.transparent:
-            self.direct_rendering = False
         element.bind(self)
 
     def reset(self):

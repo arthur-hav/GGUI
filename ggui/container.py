@@ -15,7 +15,7 @@ class OverflowWidget(Widget):
         if self.overflow_h or self.overflow_w:
             self._scrollbar = ScrollBar(window=self)
             self.add_element(self._scrollbar)
-        self.direct_rendering = self.direct_rendering and not self.overflow_h and not self.overflow_w
+        self.direct_rendering = False
 
     @property
     def total_w(self):
