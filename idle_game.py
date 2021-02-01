@@ -2,6 +2,7 @@ import pygame
 from pubsub import pub
 import ggui
 from collections import OrderedDict
+import random
 
 FRAMERATE = 60
 SMALL_FONT = None
@@ -28,14 +29,13 @@ class MainMenu(ggui.GuiContainer):
 
 class Game:
     building_costs = {
-        'power_plant': {'metal': 20}
+        'power_plant': {'iron': 20}
     }
 
     def __init__(self):
         self.resources = OrderedDict({
-            'metal': 10,
-            'energy': 10,
-            'wood': 10
+            'iron': 0,
+            'wood': 0
         })
         self.buildings = OrderedDict({
             'power_plant': 0
@@ -46,7 +46,7 @@ class Game:
 
     def update(self, frame_time):
         consumption = min(self.resources['wood'], self.buildings['power_plant'] * frame_time / 5000)
-        self.resources['energy'] += consumption * 5
+        # self.resources['energy'] += consumption * 5
         self.resources['wood'] -= consumption
         if self.current_action:
             self.action_time += frame_time / 1000
@@ -77,12 +77,41 @@ class HexTile(ggui.Widget):
         self.revealed_style = ggui.Style(color=(0.25, 0.25, 0.25, 1), hover_color=(0.5, 0.5, 0.5, 1), fade_out_time=0.2)
         self.revealed = False
         super().__init__(x, y, 56, 60, texture=self.master_texture, style=self.hidden_style)
+        self.disable()
+        if random.random() < 0.06:
+            self.add_element(Resource(12, 13, 'wood'))
+        elif random.random() < 0.02:
+            self.add_element(Resource(12, 13, 'iron'))
 
     def hover_pred(self, x, y):
         t1 = - (y - self.y) + 0.5 * (x - self.x) + self.w * 3 / 4
         t2 = - (y - self.y) - 0.5 * (x - self.x) + 5 * self.w / 4
         t3 = x - self.x
         return 0 < t1 < self.h and 0 < t2 < self.h and 0 < t3 < self.w
+
+    def reveal(self):
+        self.style = self.revealed_style
+        self.revealed = True
+        self.enable()
+        for element in self.elements:
+            try:
+                element.reveal()
+            except AttributeError:
+                pass
+
+
+class Resource(ggui.Widget):
+    master_textures = {}
+    name = ''
+
+    def __init__(self, x, y, name):
+        self.name = name
+        if self.name not in self.master_textures:
+            self.master_textures[self.name] = self.load_image(f'images/{self.name.capitalize()}.png')
+        self.hidden_style = ggui.Style(color=(0, 0, 0, 1))
+        self.revealed_style = ggui.Style(color=(1, 1, 1, 1))
+        self.revealed = False
+        super().__init__(x, y, 32, 32, texture=self.master_textures[self.name], style=self.hidden_style)
 
     def reveal(self):
         self.style = self.revealed_style
@@ -96,7 +125,9 @@ class Grid(ggui.GuiContainer):
             for i in range(-56, self.w, 56):
                 if j % 4 == 0:
                     i += 28
-                self.add_element(HexTile(i, j))
+                hex = HexTile(i, j)
+                self.add_element(hex)
+
         center_cell = self.elements[len(self.elements)//2]
         self.player_cell = center_cell
         self.player = ggui.Widget(center_cell.w / 2 - 10, center_cell.h / 2 - 10, 20, 20)
@@ -153,6 +184,7 @@ class Grid(ggui.GuiContainer):
             self.clear()
             self.set_redraw()
 
+
 class ActionTab(ggui.GuiContainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -160,40 +192,45 @@ class ActionTab(ggui.GuiContainer):
                                     hover_color=(0.12, 0.12, 0.12, 0.5),
                                     click_color=(0.37, 0.0, 0.0, 0.5),
                                     border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5))
-        gatherable_resources = ['wood', 'metal']
 
-        self.gather_select = ggui.DropDown(20, 20, 210, 40, 'Gather...', gatherable_resources, SMALL_FONT,
-                                           style=self.btn_style)
+        self.gather_btn = ggui.Button(20, 20, 210, 40, 'Gather Resource', SMALL_FONT, style=self.btn_style)
 
         self.build_select = ggui.DropDown(20, 80, 210, 40, 'Build...', ['Steam power plant'], SMALL_FONT,
                                           style=self.btn_style)
-        for element in [self.gather_select, self.build_select]:
+        for element in [self.gather_btn, self.build_select]:
             self.add_element(element)
-        pub.subscribe(self.gather_focus, f'{self.gather_select.uid}.focus')
-        pub.subscribe(self.gather_unfocus, f'{self.gather_select.uid}.unfocus')
-
-    def gather_focus(self, event):
-        self.elements.remove(self.build_select)
-
-    def gather_unfocus(self, event):
-        self.add_element(self.build_select)
 
 
 class ResourceTab(ggui.GuiContainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.texts = []
+        self.texts = {}
+        self.icons = {}
 
     def bind(self, parent):
         super().bind(parent)
-        for i, resources in enumerate(self.parent.game.resources.keys()):
-            self.texts.append(ggui.TextOverlay(20, 20 + 50 * i, resources, SMALL_FONT, w=200))
-        for element in self.texts:
-            self.add_element(element)
+        for resource, value in self.parent.game.resources.items():
+            self.texts[resource] = ggui.TextOverlay(60, 20, resource, SMALL_FONT, w=200)
+            self.icons[resource] = Resource(20, 20, resource)
+            self.icons[resource].reveal()
 
     def update(self, frame_time):
-        for i, (resource, amount) in enumerate(self.parent.game.resources.items()):
-            self.texts[i].render_string.string = f"{amount:.1f} {resource.capitalize()}"
+        i = 0
+        for resource, amount in self.parent.game.resources.items():
+            if amount <= 0:
+                if self.texts[resource] in self.elements:
+                    self.elements.remove(self.texts[resource])
+                    self.elements.remove(self.icons[resource])
+                    self.texts[resource].unbind()
+                    self.icons[resource].unbind()
+                continue
+            self.texts[resource].render_string.string = f"{amount:.0f}"
+            self.texts[resource].y = 20 + 50 * i
+            self.icons[resource].y = 20 + 50 * i
+            i += 1
+            if self.texts[resource] not in self.elements:
+                self.add_element(self.texts[resource])
+                self.add_element(self.icons[resource])
         super().update(frame_time)
 
 
@@ -217,7 +254,7 @@ class PlayScene(ggui.GuiContainer):
         self.add_element(self.resources)
 
         pub.subscribe(self.build_callback, f'{self.actions.build_select.uid}.select')
-        pub.subscribe(self.gather_callback, f'{self.actions.gather_select.uid}.select')
+        pub.subscribe(self.gather_callback, f'{self.actions.gather_btn.uid}.confirm-click')
 
     def update(self, frame_time):
         self.game.update(frame_time)
@@ -244,19 +281,20 @@ class PlayScene(ggui.GuiContainer):
         self.actions.enable()
 
     def gather_callback(self, event):
-        if event.index == 0:
-            self.game.current_action = lambda: self.gather_done('wood')
-        if event.index == 1:
-            self.game.current_action = lambda: self.gather_done('metal')
+        self.game.current_action = self.gather_done
         self.game.action_time_max = 5
-        self.actions.elements.remove(self.actions.gather_select)
+        self.actions.elements.remove(self.actions.gather_btn)
         self.actions.add_element(self.progress_bar)
-        self.progress_bar.x, self.progress_bar.y = self.actions.gather_select.x, self.actions.gather_select.y
+        self.progress_bar.x, self.progress_bar.y = self.actions.gather_btn.x, self.actions.gather_btn.y
         self.actions.disable()
 
-    def gather_done(self, resource):
-        self.game.resources[resource] += 10
-        self.actions.add_element(self.actions.gather_select)
+    def gather_done(self):
+        for element in self.grid.player_cell.elements:
+            try:
+                self.game.resources[element.name] += 10
+            except (AttributeError, KeyError):
+                pass
+        self.actions.add_element(self.actions.gather_btn)
         self.actions.elements.remove(self.progress_bar)
         self.actions.enable()
 

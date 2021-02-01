@@ -39,6 +39,7 @@ class Widget:
         self.dirty = 1
         self.uid = str(uuid.uuid4())
         self.disabled = False
+        self.hidden = False
 
     def disable(self):
         prev_disabled = self.disabled
@@ -231,6 +232,8 @@ class Widget:
             element.key_down(keycode, key_char)
 
     def draw(self, force=False):
+        if self.hidden:
+            return
         if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         for element in sorted(self.elements, key=lambda w: w.z):
@@ -321,6 +324,14 @@ class Widget:
         self.animation_ratio = 0
         self.clear()
         self.set_redraw()
+
+    def hide(self):
+        self.hidden = True
+        self.draw_parent.set_redraw()
+
+    def show(self):
+        self.hidden = False
+        self.draw_parent.set_redraw()
 
     @classmethod
     def load_image(self, image_path):
