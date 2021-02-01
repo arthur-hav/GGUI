@@ -63,7 +63,6 @@ class DropDown(GuiContainer):
             self.drop_down.reset()
             self.drop_down.unbind()
 
-
     def hover_pred(self, x, y):
         if not self.focus:
             return self.button.hover_pred(self.to_element_x(x), self.to_element_y(y))

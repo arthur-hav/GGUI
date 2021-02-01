@@ -67,6 +67,48 @@ class Game:
             self.resources[resource] -= cost
 
 
+class HexTile(ggui.Widget):
+    master_texture = None
+
+    def __init__(self, x, y, *args, **kwargs):
+        if not self.master_texture:
+            HexTile.master_texture = self.load_image('images/Hex.png')
+        super().__init__(x, y, 56, 60, texture=self.master_texture, **kwargs)
+        self.style = ggui.Style(color=(0.25, 0.25, 0.25, 1), hover_color=(0.5, 0.5, 0.5, 1), fade_out_time=0.2)
+
+    def hover_pred(self, x, y):
+        t1 = - (y - self.y) + 0.5 * (x - self.x) + self.w * 3 / 4
+        t2 = - (y - self.y) - 0.5 * (x - self.x) + 5 * self.w / 4
+        t3 = x - self.x
+        return 0 < t1 < self.h and 0 < t2 < self.h and 0 < t3 < self.w
+
+
+class Grid(ggui.GuiContainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for j in range(-46, self.h, 46):
+            for i in range(-56, self.w, 56):
+                if j % 4 == 0:
+                    i += 28
+                self.add_element(HexTile(i, j))
+        self.player = ggui.Widget(self.w/2, self.h/2, 20, 20)
+        self.player.texture = self.player.load_image('images/Player.png')
+        self.add_element(self.player)
+
+    def get_clicked_element(self):
+        for element in self.elements:
+            if element.clicked:
+                return element
+
+    def mouse_down(self, x, y, button):
+        super().mouse_down(x, y, button)
+        cell = self.get_clicked_element()
+        if not cell:
+            return
+        self.player.x, self.player.y = cell.x + cell.w / 2 - 10, cell.y + cell.h / 2 - 10
+        self.player.clear()
+        self.player.set_redraw()
+
 class ActionTab(ggui.GuiContainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -115,7 +157,7 @@ class PlayScene(ggui.GuiContainer):
     def __init__(self):
         super().__init__(10, 10, 1900, 1060, style=ggui.Style(color=(0.05, 0.05, 0.05, 1)))
 
-        self.panel_style = ggui.Style(color=(0.1, 0.1, 0.1, 0.10))
+        self.panel_style = ggui.Style(color=(0.1, 0.1, 0.1, 0.25), hover_color=(0.1, 0.1, 0.1, 1))
         self.subpanel_style = ggui.Style(parent_styles=[self.panel_style],
                                          border_color=(0.5, 0.5, 0.5, 0.5),
                                          border_line_w=2)
@@ -125,9 +167,11 @@ class PlayScene(ggui.GuiContainer):
         self.resources = ResourceTab(10, 10, 250, 800, style=self.panel_style)
         self.progress_bar = ggui.ProgressBar(10, 80, 210, 15, style=ggui.Style(color=(0, 0, 0, 0.2), border_line_w=2,
                                                                                border_color=(0.5, 0.5, 0.5, 0.2)))
-
+        self.grid = Grid(50, 40, 1800, 1000, style=ggui.Style(color=(0, 0, 0, 1)))
+        self.add_element(self.grid)
         self.add_element(self.actions)
         self.add_element(self.resources)
+
         pub.subscribe(self.build_callback, f'{self.actions.build_select.uid}.select')
         pub.subscribe(self.gather_callback, f'{self.actions.gather_select.uid}.select')
 
@@ -147,7 +191,7 @@ class PlayScene(ggui.GuiContainer):
         self.actions.elements.remove(self.actions.build_select)
         self.actions.add_element(self.progress_bar)
         self.progress_bar.x, self.progress_bar.y = self.actions.build_select.x, self.actions.build_select.y
-        self.disable()
+        self.actions.disable()
 
     def build_done(self, building):
         self.game.buildings[building] += 1
@@ -155,7 +199,7 @@ class PlayScene(ggui.GuiContainer):
         self.actions.elements.remove(self.progress_bar)
         self.actions.clear()
         self.actions.set_redraw()
-        self.enable()
+        self.actions.enable()
 
     def gather_callback(self, event):
         if event.index == 0:
@@ -166,7 +210,7 @@ class PlayScene(ggui.GuiContainer):
         self.actions.elements.remove(self.actions.gather_select)
         self.actions.add_element(self.progress_bar)
         self.progress_bar.x, self.progress_bar.y = self.actions.gather_select.x, self.actions.gather_select.y
-        self.disable()
+        self.actions.disable()
 
     def gather_done(self, resource):
         self.game.resources[resource] += 10
@@ -174,7 +218,7 @@ class PlayScene(ggui.GuiContainer):
         self.actions.elements.remove(self.progress_bar)
         self.actions.clear()
         self.actions.set_redraw()
-        self.enable()
+        self.actions.enable()
 
 
 class IdleGame:

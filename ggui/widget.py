@@ -16,7 +16,7 @@ class Event:
 class Widget:
     DEFAULT_STYLE = Style(color=(1, 1, 1, 1))
 
-    def __init__(self, x=0, y=0, w=0, h=0, style=None, *args, **kwargs):
+    def __init__(self, x=0, y=0, w=0, h=0, style=None, texture=0, *args, **kwargs):
         self.x = x
         self.y = y
         self.w = w
@@ -33,14 +33,17 @@ class Widget:
         self.animation_ratio = 0
         self._color_start = self.style.default_color
         self._color_end = self.style.default_color
-        self.texture = 0
-        self.direct_rendering = True
+        self.texture = texture
+        self.cleared = False
+        self.direct_rendering = False
         self.dirty = 1
         self.uid = str(uuid.uuid4())
         self.disabled = False
 
     def disable(self):
         prev_disabled = self.disabled
+        self.hovered = False
+        self.clicked = False
         self.disabled = True
         if not prev_disabled:
             self.clear()
@@ -71,32 +74,15 @@ class Widget:
     def clear(self):
         pass
 
-    def set_redraw(self, overlap_elem=None):
-        if not overlap_elem:
-            overlap_elem = self
-        stk = self.elements[:]
-        while stk:
-            element = stk.pop(0)
-            for son in element.elements:
-                stk.append(son)
-            e_fbo, fbo_w, fbo_h, e_x, e_y = element.get_draw_parent_fbo()
-
-            if element.draw_parent == self.draw_parent:
-                if overlap_elem.overlaps(e_x, e_y, element.w, element.h):
-                    element.dirty = max(element.dirty, 1)
-            if element.draw_parent == self:
-                element.dirty = max(element.dirty, 1)
-        self.dirty = max(self.dirty, 1)
-        if self.draw_parent and self.style.transparent:
+    def set_redraw(self):
+        self.cleared = True
+        self.dirty = True
+        if self.draw_parent:
             self.draw_parent.clear()
             self.draw_parent.set_redraw()
-        elif self.draw_parent:
-            self.draw_parent.dirty = 1
 
     @property
     def draw_parent(self):
-        if self.parent and self.parent.direct_rendering:
-            return self.parent.draw_parent
         return self.parent
 
     def __repr__(self):
@@ -108,9 +94,6 @@ class Widget:
         return pres
 
     def get_draw_parent_fbo(self):
-        if self.parent and self.parent.direct_rendering:
-            fbo, w, h, x_parent, y_parent = self.parent.get_draw_parent_fbo()
-            return fbo, w, h, x_parent + self.x, y_parent + self.y
         if self.parent:
             return self.parent.fbo, self.parent.total_w, self.parent.total_h, self.x, self.y
         return 0, self.w, self.h, self.x, self.y
@@ -123,11 +106,8 @@ class Widget:
         for element in self.elements:
             element.update(frame_time)
         if self.dirty and self.draw_parent:
-            if self.style.transparent or self.draw_parent.style.transparent:
-                self.draw_parent.clear()
-                self.draw_parent.set_redraw()
-            else:
-                self.draw_parent.dirty = self.dirty
+            self.draw_parent.clear()
+            self.draw_parent.set_redraw()
 
     def get_color(self):
         if self.animation_ratio:
@@ -251,10 +231,11 @@ class Widget:
         if self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         for element in sorted(self.elements, key=lambda w: w.z):
-            element.draw()
+            element.draw(self.cleared)
         if not self.direct_rendering and (self.dirty or force):
             self.parent_draw()
         self.dirty = max(self.dirty - 1, 0)
+        self.cleared = False
 
     def parent_draw(self):
         fbo, w_parent, h_parent, x, y = self.get_draw_parent_fbo()
@@ -340,16 +321,23 @@ class Widget:
         self.clear()
         self.set_redraw()
 
-    def load_image(self, image_path, resize=True):
-        self.texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.texture)
+    @classmethod
+    def load_image(self, image_path):
+        texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, texture)
         im = Image.open(image_path)
         im = im.transpose(Image.FLIP_TOP_BOTTOM)
+        # Premultiply
+        if im.mode == 'RGBA':
+            pixels = im.load()
+            for px_i in range(im.width):
+                for px_j in range(im.height):
+                    px_r, px_g, px_b, px_a = pixels[px_i, px_j]
+                    pixels[px_i, px_j] = (round(px_r * px_a / 255), round(px_g * px_a / 255),
+                                          round(px_b * px_a / 255), px_a)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, im.width, im.height,
                      0, GL_RGBA if im.mode == 'RGBA' else GL_RGB, GL_UNSIGNED_BYTE, im.tobytes())
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-        if resize:
-            self.w = im.width
-            self.h = im.height
+        return texture
 

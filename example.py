@@ -54,8 +54,8 @@ class ExampleApp:
         select = ggui.DropDown(800, 40, 160, 40, 'Select menu', [f"Option {i}" for i in range(1, 21)],
                           self.small_font, style=select_style, max_h=300)
 
-        image = ggui.Widget(600, 600, 1, 1)
-        image.load_image('images/Other Load.png')
+        image = ggui.Widget(600, 600, 28, 30)
+        image.texture = image.load_image('images/Hex.png')
 
         pub.subscribe(listener, f'{select.uid}.select')
         self.panel.add_element(image)
