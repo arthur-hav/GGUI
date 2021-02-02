@@ -1,13 +1,22 @@
 import pygame
 from pubsub import pub
 import ggui
-from collections import OrderedDict
+from collections import defaultdict, Counter
 import random
 
 FRAMERATE = 60
 SMALL_FONT = None
 MEDIUM_FONT = None
 LARGE_FONT = None
+
+
+class LambdaListener:
+    def __init__(self, fn, **kwargs):
+        self.callable = fn
+        self.kwargs = kwargs
+
+    def __call__(self, event):
+        self.callable(**self.kwargs)
 
 
 class MainMenu(ggui.GuiContainer):
@@ -39,22 +48,22 @@ class Game:
     }
 
     def __init__(self):
-        self.resources = OrderedDict({
-            'iron': 0,
-            'wood': 0
-        })
-        self.buildings = OrderedDict({
-            'power_plant': 0
-        })
+        self.resources = ['iron', 'wood']
+        self.inventory = Counter()
+        self.stashes_map = defaultdict(Counter)
+        self.buildings = ['power_plant']
+        self.building_map = defaultdict(Counter)
         self.current_action = None
         self.action_time_max = 0
         self.action_time = 0
+        self.player_coords = (0, 0)
         self.map = {}
 
     def update(self, frame_time):
-        consumption = min(self.resources['wood'], self.buildings['power_plant'] * frame_time / 5000)
-        # self.resources['energy'] += consumption * 5
-        self.resources['wood'] -= consumption
+        pass
+        # consumption = min(self.resources['wood'], self.buildings['power_plant'] * frame_time / 5000)
+        # # self.resources['energy'] += consumption * 5
+        # self.resources['wood'] -= consumption
         if self.current_action:
             self.action_time += frame_time / 1000
             if self.action_time > self.action_time_max:
@@ -65,13 +74,13 @@ class Game:
 
     def check_resources(self, building):
         for resource, cost in self.building_costs[building].items():
-            if self.resources[resource] < cost:
+            if self.inventory[resource] < cost:
                 return False
         return True
 
     def consume_resources(self, building):
         for resource, cost in self.building_costs[building].items():
-            self.resources[resource] -= cost
+            self.inventory[resource] -= cost
 
 
 class HexTile(ggui.Widget):
@@ -132,7 +141,6 @@ class Grid(ggui.GuiContainer):
         self.hexes = []
         self._moving_from = None
         self._moving_to = None
-        self.player_coords = (0, 0)
         self.center_cell_coords = (840, 460)
         self.origin_shift = (0, 0)
         self.player = ggui.Widget(840 + 18, 460 + 20, 20, 20)
@@ -141,7 +149,7 @@ class Grid(ggui.GuiContainer):
         self.add_element(self.player)
 
     def dist(self, cell1, cell2):
-        return ((cell1.x - cell2.x) ** 2 + (cell1.y - cell2.y) ** 2) ** 0.5 / cell1.w
+        return ((cell1.x - cell2.x) ** 2 + (cell1.y - cell2.y) ** 2) ** 0.5 / 56
 
     def to_logical_coords(self, point):
         return (point.x - self.center_cell_coords[0] + self.origin_shift[0]), \
@@ -178,20 +186,20 @@ class Grid(ggui.GuiContainer):
         if self.player in self.elements:
             self.elements.remove(self.player)
         self.add_element(self.player)
-        self.player.x, self.player.y = self.to_screen_xy(Point(*self.player_coords), Point(18, 20))
+        self.player.x, self.player.y = self.to_screen_xy(Point(*self.parent.game.player_coords), Point(18, 20))
         self.clear()
         self.set_redraw()
 
     def mouse_down(self, x, y, button):
         super().mouse_down(x, y, button)
-        if button == 1 and not self._moving_to:
+        if button == 1 and not self.parent.game.current_action:
             cell = self.get_clicked_element()
-            if not cell or self.to_logical_coords(cell) == self.player_coords:
+            if not cell or self.to_logical_coords(cell) == self.parent.game.player_coords:
                 return
             self.parent.game.current_action = lambda: self.move(cell)
-            self._moving_from = self.player_coords
+            self._moving_from = self.parent.game.player_coords
             self._moving_to = self.to_logical_coords(cell)
-            self.parent.game.action_time_max = self.dist(cell, Point(*self.player_coords)) / 46
+            self.parent.game.action_time_max = self.dist(Point(*self._moving_to), Point(*self._moving_from)) * 0.5
         elif not self._moving_to:
             for element in self.elements:
                 if element.hovered:
@@ -217,7 +225,8 @@ class Grid(ggui.GuiContainer):
         for element in self.hexes:
             if self.to_logical_coords(element) == (x, y):
                 return element
-        hex = HexTile(x + self.center_cell_coords[0] - self.origin_shift[0], y + self.center_cell_coords[1] - self.origin_shift[1])
+        hex = HexTile(x + self.center_cell_coords[0] - self.origin_shift[0],
+                      y + self.center_cell_coords[1] - self.origin_shift[1])
         self.hexes.append(hex)
         self.add_element(hex, 0)
         return hex
@@ -230,7 +239,7 @@ class Grid(ggui.GuiContainer):
 
     def scout(self):
         for step in self.STEPS:
-            x, y = self.player_coords[0] + step[0], self.player_coords[1] + step[1]
+            x, y = self.parent.game.player_coords[0] + step[0], self.parent.game.player_coords[1] + step[1]
             cell = self.get_hex_at_logical_xy(x, y)
             retval = cell.reveal()
             if retval:
@@ -241,8 +250,8 @@ class Grid(ggui.GuiContainer):
         self.scout()
 
     def move(self, cell):
-        self.player_coords = self.to_logical_coords(cell)
-        self.player.x, self.player.y = self.to_screen_xy(Point(*self.player_coords), Point(18, 20))
+        self.parent.game.player_coords = self.to_logical_coords(cell)
+        self.player.x, self.player.y = self.to_screen_xy(Point(*self.parent.game.player_coords), Point(18, 20))
         self.scout()
         self._moving_to = None
         self._moving_from = None
@@ -264,47 +273,131 @@ class ActionTab(ggui.GuiContainer):
         super().__init__(*args, **kwargs)
         self.btn_style = ggui.Style(color=(0.075, 0.075, 0.075, 0.5),
                                     hover_color=(0.12, 0.12, 0.12, 0.5),
-                                    click_color=(0.37, 0.0, 0.0, 0.5),
-                                    border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5))
+                                    click_color=(0, 0.4, 0.4, 0.5),
+                                    border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5),
+                                    disabled_color=(0.15, 0.15, 0.15, 0.25))
+        self.btn_text_style = ggui.Style(color=(1, 1, 1, 1), disabled_color=(0.5, 0.5, 0.5, 0.5))
 
-        self.gather_btn = ggui.Button(20, 20, 210, 40, 'Gather Resource', MEDIUM_FONT, style=self.btn_style)
+        self.gather_btn = ggui.Button(20, 20, 210, 40, 'Gather Resource', MEDIUM_FONT,
+                                      style=self.btn_style, text_style=self.btn_text_style)
 
         self.build_select = ggui.DropDown(20, 80, 210, 40, 'Build...', ['Steam power plant'], MEDIUM_FONT,
-                                          style=self.btn_style)
+                                          style=self.btn_style, text_style=self.btn_text_style)
         for element in [self.gather_btn, self.build_select]:
             self.add_element(element)
 
+    def update(self, frame_time):
+        if self.parent.game.map.get(self.parent.game.player_coords) in (None, 'empty'):
+            self.gather_btn.disable()
+        else:
+            self.gather_btn.enable()
+        super().update(frame_time)
 
-class ResourceTab(ggui.GuiContainer):
+
+class StashView(ggui.GuiContainer):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.texts = {}
         self.icons = {}
+        self.game = None
 
     def bind(self, parent):
         super().bind(parent)
-        for resource, value in self.parent.game.resources.items():
-            self.texts[resource] = ggui.TextOverlay(25, 40, resource, SMALL_FONT, w=27, style=ggui.Style(color=(0, 0, 0, 0.5)))
-            self.icons[resource] = Resource(20, 20, resource)
+        self.game = parent.parent.game
+        for resource in self.game.resources:
+            self.texts[resource] = ggui.TextOverlay(20, 40, resource, SMALL_FONT,
+                                                    w=32, style=ggui.Style(color=(0, 0, 0, 0.5)))
+            res = Resource(20, 20, resource)
+            self.icons[resource] = res
 
     def update(self, frame_time):
         i = 0
-        for resource, amount in self.parent.game.resources.items():
+        j = 0
+        elements_changed = False
+        resource_counter = self.get_resource_counter()
+        for resource in self.game.resources:
+            amount = resource_counter[resource]
             if amount <= 0:
                 if self.texts[resource] in self.elements:
                     self.elements.remove(self.texts[resource])
                     self.elements.remove(self.icons[resource])
                     self.texts[resource].unbind()
                     self.icons[resource].unbind()
+                    elements_changed = True
                 continue
             self.texts[resource].render_string.string = f"{amount:.0f}"
-            self.texts[resource].y = 40 + 50 * i
-            self.icons[resource].y = 20 + 50 * i
+            self.icons[resource].x = 2 + 32 * i
+            self.texts[resource].x = 2 + 32 * i
+            self.texts[resource].y = 2 + 20 + 32 * j
+            self.icons[resource].y = 2 + 32 * j
             i += 1
+            if i > 5:
+                j += 1
+                i = 0
             if self.texts[resource] not in self.elements:
                 self.add_element(self.icons[resource])
                 self.add_element(self.texts[resource])
-        super().update(frame_time)
+                elements_changed = True
+        if elements_changed:
+            self.clear()
+            self.set_redraw()
+
+    def get_resource_counter(self):
+        return Counter()
+
+
+class Inventory(StashView):
+    def get_resource_counter(self):
+        return self.game.inventory
+
+
+class TileStashView(StashView):
+    def get_resource_counter(self):
+        return self.game.stashes_map[self.game.player_coords]
+
+
+class ResourceTab(ggui.GuiContainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        style_stash = ggui.Style(border_color=(0.5, 0.5, 0.5, 0.5), border_line_w=2)
+        self.inventory_title = ggui.TextOverlay(10, 10, 'Inventory', MEDIUM_FONT)
+        self.inventory = Inventory(10, 40, 196, 164, style=style_stash)
+        self.tile_stash_title = ggui.TextOverlay(10, 260, 'Ground', MEDIUM_FONT)
+        self.tile_stash_view = TileStashView(10, 290, 196, 164, style=style_stash)
+        self.drag_start = None
+        self.inventory_drag_listeners = {}
+        self.ground_drag_listeners = {}
+
+    def bind(self, parent):
+        super().bind(parent)
+        self.add_element(self.inventory)
+        self.add_element(self.tile_stash_view)
+        self.add_element(self.inventory_title)
+        self.add_element(self.tile_stash_title)
+        for stash_type, listener_dict in [(self.inventory, self.inventory_drag_listeners),
+                                          (self.tile_stash_view, self.ground_drag_listeners)]:
+            for resource in self.parent.game.resources:
+                ll = LambdaListener(self.on_click, resource=resource, stash=stash_type)
+                icon = stash_type.icons[resource]
+                listener_dict[resource] = ll
+                pub.subscribe(ll, f'{icon.uid}.click')
+
+    def on_click(self, resource, stash):
+        print(stash == self.inventory)
+        self.drag_start = (resource, stash)
+
+    def mouse_up(self, x, y):
+        if self.tile_stash_view.hovered and self.drag_start and self.inventory == self.drag_start[1]:
+            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]] += \
+            self.parent.game.inventory[self.drag_start[0]]
+            self.parent.game.inventory[self.drag_start[0]] = 0
+        if self.inventory.hovered and self.drag_start and self.tile_stash_view == self.drag_start[1]:
+            self.parent.game.inventory[self.drag_start[0]] = \
+            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]]
+            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]] = 0
+        self.drag_start = None
+        super().mouse_up(x, y)
 
 
 class PlayScene(ggui.GuiContainer):
@@ -348,7 +441,7 @@ class PlayScene(ggui.GuiContainer):
         self.actions.disable()
 
     def build_done(self, building):
-        self.game.buildings[building] += 1
+        self.game.building_map[self.game.player_coords][building] += 1
         self.actions.add_element(self.actions.build_select)
         self.actions.elements.remove(self.progress_bar)
         self.actions.enable()
@@ -362,12 +455,12 @@ class PlayScene(ggui.GuiContainer):
         self.actions.disable()
 
     def gather_done(self):
-        player_pos = self.grid.player_coords
+        player_pos = self.game.player_coords
         resource = self.game.map.get(player_pos)
         if not resource or resource == 'empty':
             print('WARNING empty resource gather')
             return
-        self.game.resources[resource] += 10
+        self.game.inventory[resource] += 10
         self.actions.add_element(self.actions.gather_btn)
         self.actions.elements.remove(self.progress_bar)
         self.actions.enable()

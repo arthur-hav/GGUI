@@ -38,22 +38,31 @@ class Widget:
         self.direct_rendering = True
         self.dirty = 1
         self.uid = str(uuid.uuid4())
-        self.disabled = False
+        self._disabled = False
         self.hidden = False
 
     def disable(self):
-        prev_disabled = self.disabled
+        if not self.disabled:
+            self.check_enabled()
+        prev_disabled = self._disabled
         self.hovered = False
         self.clicked = None
-        self.disabled = True
+        self._disabled = True
         if not prev_disabled:
             self.reset()
 
+    def check_enabled(self):
+        still_disabled = self.disabled
+        if still_disabled:
+            return
+        for element in self.elements:
+            element.check_enabled()
+        self.reset()
+
     def enable(self):
-        prev_disabled = self.disabled
-        self.disabled = False
-        if prev_disabled:
-            self.reset()
+        self._disabled = False
+        for element in self.elements:
+            element.check_enabled()
 
     def find_element(self, uid):
         if self.uid == uid:
@@ -79,6 +88,14 @@ class Widget:
         if self.draw_parent:
             self.draw_parent.clear()
             self.draw_parent.set_redraw()
+
+    @property
+    def disabled(self):
+        if self._disabled:
+            return True
+        if self.parent:
+            return self.parent.disabled
+        return False
 
     @property
     def draw_parent(self):
