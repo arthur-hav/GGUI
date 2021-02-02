@@ -314,8 +314,11 @@ class Widget:
         glVertex2f(x2, y2)
         glEnd()
 
-    def add_element(self, element):
-        self.elements.append(element)
+    def add_element(self, element, position=None):
+        if position is not None:
+            self.elements.insert(position, element)
+        else:
+            self.elements.append(element)
         element.bind(self)
 
     def reset(self):

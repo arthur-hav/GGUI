@@ -27,6 +27,12 @@ class MainMenu(ggui.GuiContainer):
         self.unbind()
 
 
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
 class Game:
     building_costs = {
         'power_plant': {'iron': 20}
@@ -124,26 +130,22 @@ class Grid(ggui.GuiContainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.hexes = []
-        self.player = ggui.Widget(56 / 2 - 10, 60 / 2 - 10, 20, 20)
-        self.player.texture = self.player.load_image('images/Player.png')
         self._moving_from = None
         self._moving_to = None
         self.player_coords = (0, 0)
         self.center_cell_coords = (840, 460)
         self.origin_shift = (0, 0)
+        self.player = ggui.Widget(840 + 18, 460 + 20, 20, 20)
+        self.player.texture = self.player.load_image('images/Player.png')
         self.drag_start = None
-
-        cell = self.get_widget_at_logical_xy(0, 0)
-        cell.add_element(self.player)
+        self.add_element(self.player)
 
     def dist(self, cell1, cell2):
         return ((cell1.x - cell2.x) ** 2 + (cell1.y - cell2.y) ** 2) ** 0.5 / cell1.w
 
-    def to_logical_coords(self, cell=None, x=None, y=None):
-        if cell:
-            x, y = cell.x, cell.y
-        return (x - self.center_cell_coords[0] + self.origin_shift[0]), \
-               (y - self.center_cell_coords[1] + self.origin_shift[1])
+    def to_logical_coords(self, point):
+        return (point.x - self.center_cell_coords[0] + self.origin_shift[0]), \
+               (point.y - self.center_cell_coords[1] + self.origin_shift[1])
 
     def get_clicked_element(self):
         for element in self.elements:
@@ -165,16 +167,18 @@ class Grid(ggui.GuiContainer):
             for i in range(- offset_w, 56 * nb_step_w, 56):
                 if hex_count % 2 == 0:
                     i += 28
-                x, y = self.to_logical_coords(x=i, y=j)
+                x, y = self.to_logical_coords(Point(i, j))
                 map_get = game_dict.get((x, y))
                 if map_get:
                     resource = map_get if map_get != 'empty' else None
                     hex = HexTile(i, j, revealed=True, resource=resource)
                     self.hexes.append(hex)
-                    self.add_element(hex)
-                    if (x, y) == self.player_coords:
-                        hex.add_element(self.player)
+                    self.add_element(hex, 0)
 
+        if self.player in self.elements:
+            self.elements.remove(self.player)
+        self.add_element(self.player)
+        self.player.x, self.player.y = self.to_screen_xy(Point(*self.player_coords), Point(18, 20))
         self.clear()
         self.set_redraw()
 
@@ -184,14 +188,10 @@ class Grid(ggui.GuiContainer):
             cell = self.get_clicked_element()
             if not cell or self.to_logical_coords(cell) == self.player_coords:
                 return
-            player_cell = self.get_widget_at_logical_xy(self.player_coords[0], self.player_coords[1])
             self.parent.game.current_action = lambda: self.move(cell)
-            player_cell.elements.remove(self.player)
-            player_cell.set_redraw()
-            self._moving_from = (player_cell.x + self.player.x, player_cell.y + self.player.y)
-            self._moving_to = (cell.x + self.player.x, cell.y + self.player.y)
-            self.parent.game.action_time_max = self.dist(cell, player_cell)
-            self.add_element(self.player)
+            self._moving_from = self.player_coords
+            self._moving_to = self.to_logical_coords(cell)
+            self.parent.game.action_time_max = self.dist(cell, Point(*self.player_coords)) / 46
         elif not self._moving_to:
             for element in self.elements:
                 if element.hovered:
@@ -213,36 +213,36 @@ class Grid(ggui.GuiContainer):
             self.drag_start = (x, y)
             self.populate_from_game_dict(self.parent.game.map)
 
-    def get_widget_at_logical_xy(self, x, y):
-        for element in self.elements:
+    def get_hex_at_logical_xy(self, x, y):
+        for element in self.hexes:
             if self.to_logical_coords(element) == (x, y):
                 return element
         hex = HexTile(x + self.center_cell_coords[0] - self.origin_shift[0], y + self.center_cell_coords[1] - self.origin_shift[1])
         self.hexes.append(hex)
-        self.add_element(hex)
+        self.add_element(hex, 0)
         return hex
+
+    def to_screen_xy(self, point, point_center=None):
+        if point_center is None:
+            point_center = Point(0, 0)
+        return point.x + self.center_cell_coords[0] - self.origin_shift[0] + point_center.x, \
+               point.y + self.center_cell_coords[1] - self.origin_shift[1] + point_center.y
 
     def scout(self):
         for step in self.STEPS:
             x, y = self.player_coords[0] + step[0], self.player_coords[1] + step[1]
-            cell = self.get_widget_at_logical_xy(x, y)
-            if cell:
-                retval = cell.reveal()
-                if retval:
-                    self.parent.game.map[x, y] = retval
+            cell = self.get_hex_at_logical_xy(x, y)
+            retval = cell.reveal()
+            if retval:
+                self.parent.game.map[x, y] = retval
 
     def bind(self, parent):
         super().bind(parent)
         self.scout()
 
     def move(self, cell):
-        self.elements.remove(self.player)
         self.player_coords = self.to_logical_coords(cell)
-        cell.add_element(self.player)
-        self.player.x = cell.w / 2 - 10
-        self.player.y = cell.h / 2 - 10
-        cell.clear()
-        cell.set_redraw()
+        self.player.x, self.player.y = self.to_screen_xy(Point(*self.player_coords), Point(18, 20))
         self.scout()
         self._moving_to = None
         self._moving_from = None
@@ -251,8 +251,10 @@ class Grid(ggui.GuiContainer):
         super(Grid, self).update(frame_time)
         if self._moving_from and self._moving_to:
             progress = self.parent.game.action_time / self.parent.game.action_time_max
-            self.player.x = self._moving_from[0] * (1 - progress) + self._moving_to[0] * progress
-            self.player.y = self._moving_from[1] * (1 - progress) + self._moving_to[1] * progress
+            from_xy = self.to_screen_xy(Point(*self._moving_from), Point(18, 20))
+            to_xy = self.to_screen_xy(Point(*self._moving_to), Point(18, 20))
+            self.player.x = from_xy[0] * (1 - progress) + to_xy[0] * progress
+            self.player.y = from_xy[1] * (1 - progress) + to_xy[1] * progress
             self.clear()
             self.set_redraw()
 
