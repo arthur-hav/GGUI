@@ -13,4 +13,4 @@ Basic usage is shown through example.py
 
 More complete and advanced usage is showcased in a simple game, idle_game.py.
 
-https://imgur.com/ICVL3W0
+![Capture of the game](https://imgur.com/ICVL3W0)
