@@ -7,22 +7,23 @@ from .widget import Widget
 from .style import Style
 from .container import GuiContainer
 
-
 MAGIC_NUMBER = 32
 WRAP_CHAR = 'char'
 WRAP_WORDS = 'words'
 
 
 class RenderFont:
-    def __init__(self, font_path, font_size):
+    def __init__(self, font_path, font_size, outline=False, outline_thickness=4):
         self.face = freetype.Face(font_path)
         self.face.set_pixel_sizes(font_size, font_size)
         self.char_to_tex = {}
         self.char_sizes = {}
         self.font_size = font_size
-        self.cache_file = font_path[:-4] + f'_{font_size}.raw'
+        self.cache_file = font_path[:-4] + f'_{font_size}{"p" if not outline else "o"}.raw'
         self.line_height = 0
         self.min_top = None
+        self.outline = outline
+        self.outline_thickness = outline_thickness
         self.fill_char_index()
         full_binary = self.get_full_binary()
         self.texture = glGenTextures(1)
@@ -53,8 +54,19 @@ class RenderFont:
         except OSError:
             tex_array = []
             for enum, my_char in enumerate(self.face.get_chars()):
-                self.face.load_glyph(my_char[1])
-                bitmap = self.face.glyph.bitmap
+                if self.outline:
+                    self.face.load_glyph(my_char[1], freetype.FT_LOAD_FLAGS['FT_LOAD_DEFAULT'] |
+                                         freetype.FT_LOAD_FLAGS['FT_LOAD_NO_BITMAP'])
+                    glyph = self.face.glyph.get_glyph()
+                    stroker = freetype.Stroker()
+                    stroker.set(int(self.outline_thickness), freetype.FT_STROKER_LINECAPS['FT_STROKER_LINECAP_ROUND'],
+                                freetype.FT_STROKER_LINEJOINS['FT_STROKER_LINEJOIN_ROUND'], 0)
+                    glyph.stroke(stroker, True)
+                    bitmap = glyph.to_bitmap(freetype.FT_RENDER_MODES['FT_RENDER_MODE_NORMAL'],
+                                             freetype.Vector(0, 0), True).bitmap
+                else:
+                    self.face.load_glyph(my_char[1])
+                    bitmap = self.face.glyph.bitmap
                 if enum % MAGIC_NUMBER == 0:
                     for i in range(self.line_height):
                         tex_array.append([])
@@ -101,7 +113,6 @@ class Vbo:
         glFlush()
         self.vtx_buffer = []
         self.tex_buffer = []
-
 
 
 class RenderString(Widget):
@@ -204,10 +215,27 @@ class RenderString(Widget):
 class TextOverlay(GuiContainer):
     DEFAULT_STYLE = Style(color=(0, 0, 0, 0))
 
-    def __init__(self, x, y, text, font, w=0, h=0, text_style=None, style=None, **kwargs):
+    def __init__(self, x, y, text, font, w=0, h=0, text_style=None, style=None, outline_font=None, **kwargs):
+        if outline_font and text_style.border_color:
+            border_color, border_w = text_style.border_color, text_style.border_line_w
+            text_style.border_color = None
+            text_style.border_line_w = 0
+            outline_style = Style(color=border_color)
+            offset = outline_font.outline_thickness / 64
+            self.outline_string = RenderString(-offset, -offset + outline_font.min_top, text, outline_font,
+                                               style=outline_style)
+        else:
+            self.outline_string = None
         self.render_string = RenderString(0, font.min_top, text, font, style=text_style, **kwargs)
         super().__init__(x, y, w or self.render_string.w, h or self.render_string.h, style=style)
+        if self.outline_string:
+            self.add_element(self.outline_string)
         self.add_element(self.render_string)
+
+    def set_text(self, string):
+        if self.outline_string:
+            self.outline_string.string = string
+        self.render_string.string = string
 
 
 class TextArea(GuiContainer):

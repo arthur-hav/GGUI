@@ -6,8 +6,11 @@ import random
 
 FRAMERATE = 60
 SMALL_FONT = None
+SMALL_FONT_OUTLINE = None
 MEDIUM_FONT = None
+MEDIUM_FONT_OUTLINE = None
 LARGE_FONT = None
+LARGE_FONT_OUTLINE = None
 
 
 class LambdaListener:
@@ -23,10 +26,13 @@ class MainMenu(ggui.GuiContainer):
 
     def __init__(self):
         super().__init__(10, 10, 1900, 1060, style=ggui.Style(color=(0.05, 0.05, 0.05, 1)))
-        btn = ggui.Button(900, 480, 120, 60, 'Play', LARGE_FONT, padding_y=10, padding_x=30,
-                          style=ggui.Style(color=(0.25, 0.05, 0.05, 1),
-                                           hover_color=(0.75, 0.5, 0.5, 1),
-                                           click_color=(1, 1, 1, 1)))
+        btn = ggui.Button(900, 480, 120, 60, 'Play', LARGE_FONT, padding_y=10,
+                          padding_x=30,
+                          style=ggui.Style(color=(0.05, 0.05, 0.05, 1),
+                                           hover_color=(0.1, 0.1, 0.1, 1),
+                                           click_color=(0, 0.4, 0.1, 1),
+                                           border_color=(0.5, 0.5, 0.5, 1),
+                                           border_line_w=2))
         pub.subscribe(self.start, f'{btn.uid}.confirm-click')
         self.add_element(btn)
 
@@ -273,7 +279,7 @@ class ActionTab(ggui.GuiContainer):
         super().__init__(*args, **kwargs)
         self.btn_style = ggui.Style(color=(0.075, 0.075, 0.075, 0.5),
                                     hover_color=(0.12, 0.12, 0.12, 0.5),
-                                    click_color=(0, 0.4, 0.4, 0.5),
+                                    click_color=(0, 0.4, 0.1, 0.5),
                                     border_line_w=1, border_color=(0.5, 0.5, 0.5, 0.5),
                                     disabled_color=(0.15, 0.15, 0.15, 0.25))
         self.btn_text_style = ggui.Style(color=(1, 1, 1, 1), disabled_color=(0.5, 0.5, 0.5, 0.5))
@@ -306,8 +312,9 @@ class StashView(ggui.GuiContainer):
         super().bind(parent)
         self.game = parent.parent.game
         for resource in self.game.resources:
-            self.texts[resource] = ggui.TextOverlay(20, 40, resource, SMALL_FONT,
-                                                    w=32, style=ggui.Style(color=(0, 0, 0, 0.5)))
+            self.texts[resource] = ggui.TextOverlay(20, 40, resource, SMALL_FONT, outline_font=SMALL_FONT_OUTLINE,
+                                                    w=32, text_style=ggui.Style(color=(1, 1, 1, 1),
+                                                                                border_color=(0, 0.4, 0.1, 1)))
             res = Resource(20, 20, resource)
             self.icons[resource] = res
 
@@ -326,7 +333,7 @@ class StashView(ggui.GuiContainer):
                     self.icons[resource].unbind()
                     elements_changed = True
                 continue
-            self.texts[resource].render_string.string = f"{amount:.0f}"
+            self.texts[resource].set_text(f"{amount:.0f}")
             self.icons[resource].x = 2 + 32 * i
             self.texts[resource].x = 2 + 32 * i
             self.texts[resource].y = 2 + 20 + 32 * j
@@ -360,7 +367,8 @@ class TileStashView(StashView):
 class ResourceTab(ggui.GuiContainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        style_stash = ggui.Style(border_color=(0.5, 0.5, 0.5, 0.5), border_line_w=2)
+        style_stash = ggui.Style(parent_styles=[ggui.Widget.DEFAULT_STYLE],
+                                 border_color=(0.5, 0.5, 0.5, 0.5), border_line_w=2)
         self.inventory_title = ggui.TextOverlay(10, 10, 'Inventory', MEDIUM_FONT)
         self.inventory = Inventory(10, 40, 196, 164, style=style_stash)
         self.tile_stash_title = ggui.TextOverlay(10, 260, 'Ground', MEDIUM_FONT)
@@ -384,18 +392,17 @@ class ResourceTab(ggui.GuiContainer):
                 pub.subscribe(ll, f'{icon.uid}.click')
 
     def on_click(self, resource, stash):
-        print(stash == self.inventory)
         self.drag_start = (resource, stash)
 
     def mouse_up(self, x, y):
         if self.tile_stash_view.hovered and self.drag_start and self.inventory == self.drag_start[1]:
-            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]] += \
-            self.parent.game.inventory[self.drag_start[0]]
+            stash = self.parent.game.stashes_map[self.parent.game.player_coords]
+            stash[self.drag_start[0]] += self.parent.game.inventory[self.drag_start[0]]
             self.parent.game.inventory[self.drag_start[0]] = 0
         if self.inventory.hovered and self.drag_start and self.tile_stash_view == self.drag_start[1]:
-            self.parent.game.inventory[self.drag_start[0]] = \
-            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]]
-            self.parent.game.stashes_map[self.parent.game.player_coords][self.drag_start[0]] = 0
+            stash = self.parent.game.stashes_map[self.parent.game.player_coords]
+            self.parent.game.inventory[self.drag_start[0]] = stash[self.drag_start[0]]
+            stash[self.drag_start[0]] = 0
         self.drag_start = None
         super().mouse_up(x, y)
 
@@ -477,10 +484,16 @@ class IdleGame:
         ggui.init_gl(1920, 1080)
         global SMALL_FONT
         SMALL_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 10)
+        global SMALL_FONT_OUTLINE
+        SMALL_FONT_OUTLINE = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 10, outline=True, outline_thickness=64)
         global MEDIUM_FONT
         MEDIUM_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 14)
+        global MEDIUM_FONT_OUTLINE
+        MEDIUM_FONT_OUTLINE = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 14, outline=True, outline_thickness=64)
         global LARGE_FONT
         LARGE_FONT = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 23)
+        global LARGE_FONT_OUTLINE
+        LARGE_FONT_OUTLINE = ggui.RenderFont("fonts/FiraCode-Regular.ttf", 23, outline=True, outline_thickness=64)
         self.window_ui = ggui.MainWindow(0, 0, 1920, 1080)
         self.main_menu = MainMenu()
         self.window_ui.add_element(self.main_menu)

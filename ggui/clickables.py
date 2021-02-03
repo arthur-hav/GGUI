@@ -7,8 +7,8 @@ from .text import TextOverlay
 
 
 class Button(GuiContainer):
-    def __init__(self, x, y, w, h, text, font, padding_x=16, padding_y=8, text_style=None, **kwargs):
-        self.caption = TextOverlay(padding_x, padding_y, text, font, text_style=text_style)
+    def __init__(self, x, y, w, h, text, font, outline_font=None, padding_x=16, padding_y=8, text_style=None, **kwargs):
+        self.caption = TextOverlay(padding_x, padding_y, text, font, outline_font=outline_font, text_style=text_style)
         super().__init__(x, y, w or self.caption.w + 2 * padding_x, h or self.caption.h + 2 * padding_y, **kwargs)
         self.add_element(self.caption)
 
