@@ -65,8 +65,12 @@ class GuiContainer(OverflowWidget):
 
     def create_fbo(self, w, h):
         texID = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, texID)
-        glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\x22' * 4 * w * h)
+        if not self.style.transparent:
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, texID)
+            glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, self.get_mode(), w, h, 0)
+        else:
+            glBindTexture(GL_TEXTURE_2D, texID)
+            glTexImage2D(GL_TEXTURE_2D, 0, self.get_mode(), w, h, 0, self.get_mode(), GL_UNSIGNED_BYTE, b'\x22' * 4 * w * h)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
         fb_id = glGenFramebuffers(1)
@@ -91,10 +95,17 @@ class GuiContainer(OverflowWidget):
 
     def parent_draw(self):
         fbo, w_disp, h_disp, x_disp, y_disp = self.get_draw_parent_fbo()
-        self.gl_draw_rectangle((1, 1, 1, 1), self.texture, fbo, w_disp, h_disp,
-                               off_x=x_disp-self.x, off_y=y_disp-self.y,
-                               tex_w=self.total_w, tex_h=self.total_h,
-                               tex_x=self.offset_x, tex_y=self.offset_y)
+        if not self.style.transparent:
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo)
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
+            glBlitFramebuffer(self.offset_x, self.offset_y, self.offset_x + self.w, self.offset_y + self.h, x_disp,
+                              (h_disp - y_disp - self.h),
+                              x_disp + self.w, h_disp - y_disp, GL_COLOR_BUFFER_BIT, GL_NEAREST)
+        else:
+            self.gl_draw_rectangle((1, 1, 1, 1), self.texture, fbo, w_disp, h_disp,
+                                   off_x=x_disp-self.x, off_y=y_disp-self.y,
+                                   tex_w=self.total_w, tex_h=self.total_h,
+                                   tex_x=self.offset_x, tex_y=self.offset_y)
 
 
 class MainWindow(GuiContainer):
